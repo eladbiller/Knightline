@@ -1,0 +1,5 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="com.chesslink.test">
+ <uses-sdk android:minSdkVersion="26" android:targetSdkVersion="35"/>
+ <application android:label="ChessLink flow verification"/>
+ <instrumentation android:name="com.traillink.ChessLinkFlowDeviceTests" android:targetPackage="com.chesslink" android:label="ChessLink guided-learning flow verification"/>
+</manifest>

@@ -1,0 +1,14 @@
+<resources>
+    <!-- Keep Android 12+ on the same safe native first-frame treatment.
+         The compile SDK available to this beta does not ship the platform
+         SplashScreen theme, so this intentionally relies on the native
+         overlay in KnightlineActivity rather than an unavailable resource. -->
+    <style name="KnightlineStartingTheme" parent="@style/KnightlineTheme">
+        <item name="android:windowBackground">#07101E</item>
+        <item name="android:statusBarColor">#07101E</item>
+        <item name="android:navigationBarColor">#07101E</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:windowLightNavigationBar">false</item>
+        <item name="android:windowNoTitle">true</item>
+    </style>
+</resources>

@@ -1,0 +1,27 @@
+<resources>
+    <style name="KnightlineTheme" parent="android:style/Theme.Material.NoActionBar">
+        <item name="android:fontFamily">sans</item>
+        <item name="android:windowActionModeOverlay">true</item>
+        <item name="android:colorAccent">#73DFC4</item>
+        <item name="android:windowBackground">#07101E</item>
+        <item name="android:statusBarColor">#07101E</item>
+        <item name="android:navigationBarColor">#07101E</item>
+        <item name="android:windowSplashScreenBackground">#07101E</item>
+        <item name="android:windowSplashScreenAnimatedIcon">@drawable/icon</item>
+        <item name="android:windowSplashScreenIconBackgroundColor">#07101E</item>
+        <item name="android:windowSplashScreenAnimationDuration">0</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:windowLightNavigationBar">false</item>
+        <item name="android:windowNoTitle">true</item>
+    </style>
+    <!-- Pre-Android-12 fallback. Android 12+ replaces this with the v31
+         platform splash theme before handing off to KnightlineTheme. -->
+    <style name="KnightlineStartingTheme" parent="android:style/Theme.Material.NoActionBar">
+        <item name="android:windowBackground">#07101E</item>
+        <item name="android:statusBarColor">#07101E</item>
+        <item name="android:navigationBarColor">#07101E</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:windowLightNavigationBar">false</item>
+        <item name="android:windowNoTitle">true</item>
+    </style>
+</resources>

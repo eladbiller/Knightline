@@ -1,0 +1,80 @@
+plugins {
+    id 'com.android.application'
+}
+
+def knightlineSigning = new Properties()
+def knightlineSigningFile = rootProject.file('signing.properties')
+if (knightlineSigningFile.exists()) {
+    knightlineSigningFile.withInputStream { knightlineSigning.load(it) }
+}
+def requestedDebugKey = providers.gradleProperty('knightlineDebugStore').orNull
+        ?: System.getenv('KNIGHTLINE_DEBUG_STORE')
+def standardDebugKey = requestedDebugKey
+        ? rootProject.file(requestedDebugKey)
+        : new File(System.getProperty('user.home'), '.android/debug.keystore')
+
+android {
+    namespace 'com.eladbiller.knightline'
+    compileSdk 35
+
+    defaultConfig {
+        applicationId 'com.eladbiller.knightline'
+        minSdk 26
+        targetSdk 35
+        versionCode 1
+        versionName '0.1.0-beta'
+    }
+
+    buildFeatures {
+        buildConfig true
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    packaging {
+        jniLibs {
+            // Stockfish is loaded by its native library path at runtime.
+            useLegacyPackaging true
+        }
+    }
+
+    signingConfigs {
+        debug {
+            // Reuse Android's conventional local debug identity when present.
+            // This keeps a developer's existing debug install updateable without
+            // putting a signing secret in this repository.
+            if (standardDebugKey.exists()) {
+                storeFile standardDebugKey
+                storePassword 'android'
+                keyAlias 'androiddebugkey'
+                keyPassword 'android'
+            }
+        }
+        release {
+            // Keystore material stays outside source control. A missing local
+            // signing.properties leaves the release artifact unsigned instead
+            // of silently falling back to a debug key.
+            if (knightlineSigningFile.exists()) {
+                storeFile rootProject.file(knightlineSigning['storeFile'])
+                storePassword knightlineSigning['storePassword']
+                keyAlias knightlineSigning['keyAlias']
+                keyPassword knightlineSigning['keyPassword']
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            shrinkResources false
+            signingConfig signingConfigs.release
+        }
+    }
+}
+
+dependencies {
+    implementation 'androidx.webkit:webkit:1.12.1'
+}

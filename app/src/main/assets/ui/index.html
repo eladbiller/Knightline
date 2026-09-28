@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="dark">
+  <meta name="theme-color" content="#08101f">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; connect-src 'self'; media-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-src 'none'">
+  <title>Knightline Preview</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <a class="skip-link" href="#main-content">Skip to content</a>
+  <div id="app" class="app-shell" data-screen="home">
+    <header class="app-header" id="app-header" data-testid="app-header"></header>
+    <main id="main-content" class="app-main" tabindex="-1"></main>
+    <nav class="bottom-nav" aria-label="Primary navigation" data-testid="primary-navigation">
+      <button class="nav-item" type="button" data-nav="home" data-testid="nav-home"><span class="nav-icon" aria-hidden="true">⌂</span><span>Home</span></button>
+      <button class="nav-item" type="button" data-nav="play" data-testid="nav-play"><span class="nav-icon" aria-hidden="true">♞</span><span>Play</span></button>
+      <button class="nav-item" type="button" data-nav="learn" data-testid="nav-learn"><span class="nav-icon" aria-hidden="true">✦</span><span>Learn</span></button>
+      <button class="nav-item" type="button" data-nav="profile" data-testid="nav-profile"><span class="nav-icon" aria-hidden="true">◉</span><span>Profile</span></button>
+    </nav>
+  </div>
+
+  <div id="sheet-backdrop" class="sheet-backdrop" hidden></div>
+  <section id="bottom-sheet" class="bottom-sheet" role="dialog" aria-modal="true" aria-labelledby="sheet-title" aria-hidden="true" tabindex="-1" data-testid="bottom-sheet">
+    <div class="sheet-grabber" aria-hidden="true"></div>
+    <div class="sheet-scroll" id="sheet-scroll"></div>
+  </section>
+  <div id="toast-region" class="toast-region" aria-live="polite" aria-atomic="true"></div>
+  <script src="app.js" defer></script>
+</body>
+</html>

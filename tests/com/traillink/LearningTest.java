@@ -1,0 +1,16 @@
+package com.traillink;
+public final class LearningTest {
+ static int assertions;static void check(boolean value,String message){assertions++;if(!value)throw new AssertionError(message);}
+ static String report(String move,String best,String reason,String bestScore,String playedScore){return "Best move found\nPlayed: "+move+"\nBest found: "+best+"\n"+reason+"\nEvaluation for White: best "+bestScore+"; played "+playedScore+".\nStockfish 16 NNUE";}
+ public static void main(String[] args){run();System.out.println("Learning PASS: "+assertions);}
+ static void run(){
+  ChessReviewText text=ChessReviewText.from(report("Kd1","Kd1","Stockfish prefers the alternative by about 0.94 pawns.","-0.20","-1.14"));
+  check(text.bestScore.equals(text.playedScore),"Same move cannot lose points against itself");check(!text.reason.contains("prefers the alternative"),"No contradictory alternative explanation");check(text.report.contains("played -0.20."),"Details normalized too");
+  text=ChessReviewText.from(report("d4","d4","Mate scores are shown below; search-limited evaluations can change.","opponent mate in 5","opponent mate in 3"));
+  check(text.bestScore.equals("Black mates in 5"),"Mate side and distance explicit");check(text.playedScore.equals(text.bestScore),"Same mate score canonical");check(text.reason.contains("Black still has forced mate in 5"),"Best can still be losing");check(!text.report.contains("shown below"),"Old misleading wording gone");
+  text=ChessReviewText.from(report("Qh4#","Qh4#","Mate scores are shown below","mate in 1","mate in 1"));check(text.bestScore.equals("White mates in 1"),"Positive mate side");
+  check(ChessReviewText.from("").playedScore.equals("Analyzing…"),"Pending review");
+  StockfishEngine.Info info=new StockfishEngine.Info();info.cp=150;check(StockfishEngine.coachScore(info,0,0).contains("+1.50"),"Your positive advantage");check(StockfishEngine.coachScore(info,0,1).contains("-1.50"),"Your negative advantage");info.mate=3;check(StockfishEngine.coachScore(info,1,1).equals("You can force mate in 3"),"Own mate");check(StockfishEngine.coachScore(info,1,0).equals("Opponent can force mate in 3"),"Opponent mate");
+  for(int lesson=0;lesson<ChessTutor.NAMES.length;lesson++){Game g=new Game(0,1);String[] moves=ChessTutor.LINES[lesson].split(" ");check(ChessTutor.lessonMoveCount(lesson)==moves.length/2,"Lesson length: "+ChessTutor.NAMES[lesson]);check(ChessTutor.objective(lesson).endsWith("."),"Lesson objective: "+ChessTutor.NAMES[lesson]);for(String move:moves){int[] m=ChessTutor.next(g,lesson);check(m!=null&&StockfishEngine.uci(g,m).equals(move),"Lesson move parses: "+ChessTutor.NAMES[lesson]);String san=ChessNotation.san(g,m[0],m[1],m[2]),cue=ChessTutor.cue(g,m);check(!cue.isEmpty()&&!cue.contains(san),"First hint stays conceptual");check(ChessTutor.briefHint(g,m).contains(san),"Final hint names move");check(!ChessTutor.pieceName(g,m).equals("piece"),"Hint source identifies piece");check(!ChessTutor.explain(g,m).isEmpty(),"Explanation exists");check(g.move(g.turn,m[0],m[1],m[2]),"Lesson move legal");}check(ChessTutor.next(g,lesson)==null,"Lesson finishes");check(ChessTutor.opening(g).startsWith(ChessTutor.NAMES[lesson]),"Opening identified");}
+ }
+}
