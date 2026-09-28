@@ -87,6 +87,7 @@ public final class KnightlineActivity extends ChessLinkActivity {
         privateRating = new SkillRatingStore(new AndroidPrivateRatingStorage(this));
         ratingOutcomeSession = getSharedPreferences("knightline-rating-session", MODE_PRIVATE)
                 .getString("completed", "");
+        restoreSessionIntegrityState();
         createLocalWebView();
     }
 
@@ -287,6 +288,7 @@ public final class KnightlineActivity extends ChessLinkActivity {
     @Override void home() {
         reviewing = false;
         inGame = false;
+        gameScreen = false;
         board = null;
         requestedScreen = "home";
         publishState();
@@ -296,6 +298,9 @@ public final class KnightlineActivity extends ChessLinkActivity {
         if (state == null) { home(); return; }
         reviewing = false;
         inGame = true;
+        // ChessLink's asynchronous coach publishes its result only while the
+        // game surface is active.  The WebView is still that game surface.
+        gameScreen = true;
         board = null;
         requestedScreen = "game";
         recordFinishedRatingIfEligible();
@@ -309,6 +314,7 @@ public final class KnightlineActivity extends ChessLinkActivity {
         }
         reviewing = true;
         inGame = true;
+        gameScreen = false;
         requestedScreen = "review";
         publishState();
     }
@@ -379,9 +385,13 @@ public final class KnightlineActivity extends ChessLinkActivity {
     }
 
     @Override void moveList() {
+        boolean liveGame = game != null && game.winner < 0;
         postEvent("overlay", obj("kind", "moves", "title", "Move history",
-                "subtitle", hasReview() ? "Review every decision after the match." : "Moves are saved as you play.",
-                "moves", moveHistory(), "canReview", hasReview()));
+                "subtitle", hasReview() ? (liveGame
+                        ? "Explore any played position without leaving your saved game."
+                        : "Review every decision with Stockfish scores and alternatives.")
+                        : "Moves are saved as you play.",
+                "moves", moveHistory(), "canReview", hasReview(), "liveGame", liveGame));
     }
 
     @Override void devices() {
@@ -425,12 +435,17 @@ public final class KnightlineActivity extends ChessLinkActivity {
         ownRatingAtStart = -1;
         ratingPeerSession = "";
         super.startGame(id);
+        persistSessionIntegrityState();
         if (id == 0 && !local && ready) ensureFriendRatingExchange();
     }
 
     @Override void continueChess(int ply) {
-        usedTakeback = true;
+        // Review branching and a normal takeback both invalidate rating, but
+        // they are different player choices and must remain labelled correctly.
+        if (reviewing) usedReviewBranch = true;
+        else usedTakeback = true;
         super.continueChess(ply);
+        persistSessionIntegrityState();
     }
 
     @Override void showSnapshot() {
@@ -445,6 +460,7 @@ public final class KnightlineActivity extends ChessLinkActivity {
             int rating = message.optInt("rating", -1);
             if (!match.isEmpty() && match.equals(session) && rating >= 1 && rating <= 10000) {
                 peerRatingAtStart = rating;
+                persistSessionIntegrityState();
                 publishState();
             }
             return;
@@ -683,9 +699,11 @@ public final class KnightlineActivity extends ChessLinkActivity {
     private void advanceCoach() {
         if (isGuidedLesson()) {
             usedHint = true;
+            persistSessionIntegrityState();
             advanceLessonHint();
         } else if (isNormalBotGame()) {
             usedHint = true;
+            persistSessionIntegrityState();
             advanceNormalHint();
         } else {
             notice("Hints are available in bot play and guided lessons.", false);
@@ -766,6 +784,7 @@ public final class KnightlineActivity extends ChessLinkActivity {
         ratingPeerSession = session;
         ownRatingAtStart = privateRating.snapshot().rating;
         peerRatingAtStart = -1;
+        persistSessionIntegrityState();
         send(obj("type", "rating", "session", session, "rating", ownRatingAtStart,
                 "protocol", KNIGHTLINE_PROTOCOL));
     }
@@ -828,29 +847,43 @@ public final class KnightlineActivity extends ChessLinkActivity {
         try {
             if (guided) {
                 boolean complete = lessonComplete();
+                String action = complete ? "" : lessonHintAction();
                 coachPayload.put("kind", "lesson");
                 coachPayload.put("heading", complete ? "Lesson complete" : ChessTutor.NAMES[openingLesson]);
                 coachPayload.put("copy", lessonCoachCopy(yourTurn, complete));
-                coachPayload.put("action", complete ? "" : lessonHintAction());
+                coachPayload.put("action", action);
                 coachPayload.put("available", !complete && yourTurn);
+                coachPayload.put("stage", hintStage(action, true));
+                coachPayload.put("loading", false);
             } else if (normal) {
+                String action = normalHintAction(yourTurn);
                 coachPayload.put("kind", "coach");
                 coachPayload.put("heading", "Position coach");
                 coachPayload.put("copy", normalCoachCopy(yourTurn));
-                coachPayload.put("action", normalHintAction(yourTurn));
+                coachPayload.put("action", action);
                 coachPayload.put("available", yourTurn);
+                coachPayload.put("stage", hintStage(action, false));
+                coachPayload.put("loading", "Preparing".equals(action));
             }
-            boolean fresh = coach != null && coachSeq == state.optInt("seq", -1) && session.equals(coachSession);
-            coachPayload.put("evaluation", fresh ? formatEvaluation(coach) : "…");
-            coachPayload.put("evaluationDetail", fresh ? coach.explanation : "Stockfish evaluates on your turn.");
+            boolean sameSession = coach != null && session.equals(coachSession);
+            boolean fresh = sameSession && coachSeq == state.optInt("seq", -1);
+            coachPayload.put("evaluation", sameSession ? formatEvaluation(coach) : "—");
+            coachPayload.put("evaluationState", fresh ? "Live" : sameSession ? "Updating" : "Analyzing");
+            coachPayload.put("evaluationDetail", fresh ? coach.explanation
+                    : sameSession ? "Showing the previous position while Stockfish updates."
+                    : "Stockfish is calculating the position.");
             coachPayload.put("hasEvaluation", fresh);
         } catch (Exception ignored) { }
         int winner = state.optInt("winner", -1);
-        String opponent = guided ? "Coach" : solo ? "Stockfish" : (peer == null || peer.length() == 0 ? "Friend" : peer);
+        String opponent = guided ? "Coach" : solo ? "Stockfish"
+                : local ? playerLabel(1 - me)
+                : (peer == null || peer.length() == 0 ? "Friend" : peer);
         String opponentDetail = guided ? "Guided opening" : solo ? (botLevel == 0 ? "Easy · estimated 600" : botLevel == 1 ? "Medium · estimated 1200" : "Hard · estimated 1800")
+                : local ? (1 - me == 0 ? "White" : "Black")
                 : ready ? "Private Knightline room" : "Waiting to reconnect";
         return obj("position", display, "rawPosition", state, "me", me, "turn", state.optInt("turn", -1),
                 "winner", winner, "yourTurn", yourTurn, "local", local, "solo", solo, "ready", ready,
+                "evaluationEnabled", solo,
                 "opponent", opponent, "opponentDetail", opponentDetail,
                 "you", local && !solo ? playerLabel(me) : "You",
                 "youDetail", me == 0 ? "White" : "Black",
@@ -878,9 +911,10 @@ public final class KnightlineActivity extends ChessLinkActivity {
             if (played != null && reviewMode != 2) { position.put("playedFrom", played.optInt(0, -1)); position.put("playedTo", played.optInt(1, -1)); }
             if (best != null && reviewMode != 1) { position.put("bestFrom", best.optInt(0, -1)); position.put("bestTo", best.optInt(1, -1)); }
         } catch (Exception ignored) { }
-        return obj("available", true, "index", reviewIndex, "total", total - 1, "mode", reviewMode,
+        return obj("available", true, "index", reviewIndex, "total", total - 1, "mode", reviewMode, "me", me,
                 "position", position, "report", presentation.report, "reason", presentation.reason,
                 "playedScore", presentation.playedScore, "bestScore", presentation.bestScore,
+                "liveGame", game != null && game.winner < 0,
                 "canPrevious", reviewIndex > 1, "canNext", reviewIndex < total - 1,
                 "canBranch", local);
     }
@@ -958,6 +992,14 @@ public final class KnightlineActivity extends ChessLinkActivity {
         return String.format(Locale.ROOT, "%s%.2f", value >= 0 ? "+" : "-", Math.abs(value) / 100.0d);
     }
 
+    private int hintStage(String action, boolean lesson) {
+        if ("Hide hint".equals(action)) return lesson ? 3 : 2;
+        if ("Show move".equals(action)) return lesson ? 2 : 1;
+        if ("Show piece".equals(action)) return 1;
+        if ("Preparing".equals(action) || "Retry hint".equals(action)) return 1;
+        return 0;
+    }
+
     private void option(JSONArray list, String id, String title, String detail) {
         list.put(obj("id", id, "title", title, "detail", detail));
     }
@@ -967,6 +1009,36 @@ public final class KnightlineActivity extends ChessLinkActivity {
     }
 
     private void reject(String message) { notice(message, true); }
+
+    /**
+     * Rating eligibility is part of the saved match, not transient screen state.
+     * Keeping it in a session-keyed preference prevents force-stop/resume from
+     * turning a hinted or branched Practice game back into a rated game.
+     */
+    private void persistSessionIntegrityState() {
+        getSharedPreferences("knightline-session-integrity", MODE_PRIVATE).edit()
+                .putString("session", session == null ? "" : session)
+                .putBoolean("hint", usedHint)
+                .putBoolean("takeback", usedTakeback)
+                .putBoolean("reviewBranch", usedReviewBranch)
+                .putString("ratingPeerSession", ratingPeerSession == null ? "" : ratingPeerSession)
+                .putInt("peerRating", peerRatingAtStart)
+                .putInt("ownRating", ownRatingAtStart)
+                .apply();
+    }
+
+    private void restoreSessionIntegrityState() {
+        android.content.SharedPreferences saved = getSharedPreferences(
+                "knightline-session-integrity", MODE_PRIVATE);
+        String savedSession = saved.getString("session", "");
+        if (session == null || session.isEmpty() || !session.equals(savedSession)) return;
+        usedHint = saved.getBoolean("hint", false);
+        usedTakeback = saved.getBoolean("takeback", false);
+        usedReviewBranch = saved.getBoolean("reviewBranch", false);
+        ratingPeerSession = saved.getString("ratingPeerSession", "");
+        peerRatingAtStart = saved.getInt("peerRating", -1);
+        ownRatingAtStart = saved.getInt("ownRating", -1);
+    }
 
     private void postEvent(String type, JSONObject payload) {
         if (!uiReady || messagePort == null) return;

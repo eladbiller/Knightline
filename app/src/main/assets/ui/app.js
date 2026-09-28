@@ -29,6 +29,7 @@
   let overlayReturnFocus = null;
   let closingSheetTimer = 0;
   let renderedScreen = '';
+  let movePending = false;
 
   const clockNames = ['10 | 0', '5 | 0', '3 | 2', '1 | 0', 'Untimed'];
   const strengthNames = ['Easy', 'Medium', 'Hard'];
@@ -37,6 +38,43 @@
     return '<svg viewBox="0 0 32 32" role="img" focusable="false" aria-hidden="true">' +
       '<path fill="currentColor" d="M23.8 27H8.3c-.8 0-1.4-.8-1.1-1.6l1.5-4.1c.2-.5.5-.9 1-1.1l2.8-1.2-3.2-4.7c-.6-.8-.3-2 .6-2.5l3.1-1.8-1-4.2c-.2-.9.4-1.7 1.3-1.7 4.1 0 7.6 2.4 8.9 6.1l1.1 3.1c.2.6.1 1.2-.3 1.7l-2.9 3.4 2.4 2.1c.4.3.6.8.6 1.3V27Zm-11.6-4.5-.4 1.1h8.8v-.8l-3.4-3-3.8 1.6-1.2 1.1Zm2.4-13.7.5 2.1 2.8-1.6a5.6 5.6 0 0 0-3.3-.5Z"/>' +
       '</svg>';
+  }
+
+  function icon(name) {
+    const paths = {
+      back: '<path d="m14.5 5-7 7 7 7M8 12h11"/>',
+      bot: '<rect x="4" y="6" width="16" height="13" rx="4"/><path d="M9 11h.01M15 11h.01M9 15h6M12 6V3"/>',
+      bluetooth: '<path d="m12 3 5 4-5 5 5 5-5 4V3Zm0 9L7 7m5 5-5 5"/>',
+      room: '<circle cx="9" cy="12" r="3.5"/><circle cx="15" cy="12" r="3.5"/><path d="M3.5 18.5c1.2-2 3-3 5.5-3m11.5 3c-1.2-2-3-3-5.5-3"/>',
+      learn: '<path d="M12 3.5 13.8 9l5.7 1.8-5.7 1.8L12 18l-1.8-5.4-5.7-1.8L10.2 9Z"/>',
+      pass: '<path d="M4 8h13m-3-3 3 3-3 3M20 16H7m3 3-3-3 3-3"/>',
+      save: '<path d="M5 3.5h11l3 3V20H5Z"/><path d="M8 3.5v5h7v-5M8 20v-7h8v7"/>',
+      engine: '<path d="M8 4h8v3h3v10h-3v3H8v-3H5V7h3Z"/><path d="M9 10h6M9 14h4"/>',
+      moves: '<path d="M6 5h12M6 12h12M6 19h12"/><circle cx="3" cy="5" r=".8"/><circle cx="3" cy="12" r=".8"/><circle cx="3" cy="19" r=".8"/>',
+      more: '<circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/>',
+      close: '<path d="m6 6 12 12M18 6 6 18"/>',
+      hint: '<path d="M9 18h6M10 21h4M8.3 14.5A6 6 0 1 1 15.7 14.5c-.8.6-1.2 1.3-1.2 2h-5c0-.7-.4-1.4-1.2-2Z"/>',
+      flag: '<path d="M6 21V4m0 1h11l-2 4 2 4H6"/>',
+      trash: '<path d="M4 6h16M9 6V3h6v3m3 0-1 15H7L6 6M10 10v7m4-7v7"/>',
+      undo: '<path d="M8 7H3v-5M3.5 7A9 9 0 1 1 4 18"/>',
+      chat: '<path d="M4 5h16v12H9l-5 4Z"/><path d="M8 9h8M8 13h5"/>',
+      settings: '<circle cx="12" cy="12" r="3"/><path d="M12 2.8v2M12 19.2v2M2.8 12h2M19.2 12h2M5.5 5.5l1.4 1.4m10.2 10.2 1.4 1.4m0-13-1.4 1.4M6.9 17.1l-1.4 1.4"/>',
+      check: '<path d="m5 12 4 4 10-10"/>',
+      review: '<path d="M4 5h16v14H4Z"/><path d="M8 15v-3m4 3V8m4 7v-5"/>',
+    };
+    return '<svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">' + (paths[name] || paths.more) + '</svg>';
+  }
+
+  function actionIcon(action) {
+    const value = String(action || '');
+    if (value.indexOf('takeback') >= 0) return 'undo';
+    if (value.indexOf('resign') >= 0) return 'flag';
+    if (value.indexOf('clear') >= 0) return 'trash';
+    if (value.indexOf('chat') >= 0) return 'chat';
+    if (value.indexOf('engine') >= 0) return 'engine';
+    if (value.indexOf('setting') >= 0) return 'settings';
+    if (value.indexOf('disconnect') >= 0) return 'close';
+    return 'more';
   }
 
   function escape(value) {
@@ -101,6 +139,10 @@
     model.lessons = object(payload.lessons, model.lessons);
     model.match = payload.match && payload.match.position ? payload.match : null;
     model.review = object(payload.review, model.review);
+    // Any authoritative state response completes (or rejects) the one pending
+    // board command. This prevents rapid taps from queuing a second move against
+    // a position that is already changing natively.
+    movePending = false;
     if (!model.match && (model.screen === 'game' || model.screen === 'review')) model.screen = 'home';
     if (selectedSquare != null && !canSelectFrom(selectedSquare)) selectedSquare = null;
     render();
@@ -165,14 +207,19 @@
   function patchHeader() {
     const transport = object(model.transport, {});
     const connected = !!transport.ready;
-    const waitingForRoom = !connected && transport.kind === 'online';
+    const waitingForRoom = !connected && transport.kind === 'online' &&
+      /opening|waiting|connecting|created|join/i.test(String(transport.status || ''));
     const findingNearby = !connected && /scanning|connecting/i.test(String(transport.status || ''));
     const label = connected ? 'Private room' : waitingForRoom ? 'Room opening…' : findingNearby ? 'Finding friend…' : 'Offline ready';
-    header.innerHTML =
-      '<div class="header-brand"><div class="brand-mark" aria-hidden="true">' + knightIcon() + '</div>' +
-      '<p class="brand-word">Knightline</p></div>' +
-      '<div class="header-status"><span class="status-dot ' + (connected ? '' : 'status-dot--idle') + '"></span>' +
-      '<span>' + escape(label) + '</span></div>';
+    const focused = model.screen === 'game' || model.screen === 'review';
+    header.innerHTML = focused
+      ? '<div class="header-brand"><button class="header-back" type="button" data-action="' + (model.screen === 'review' ? 'review-back' : 'nav-home') + '" aria-label="Back">' + icon('back') + '</button>' +
+        '<div><p class="header-context">' + (model.screen === 'review' ? 'Analysis' : 'Current game') + '</p><p class="brand-word">' + (model.screen === 'review' ? 'Game review' : escape(model.match && model.match.opponent || 'Knightline')) + '</p></div></div>' +
+        '<div class="header-status header-status--compact"><span class="status-dot ' + (connected ? '' : 'status-dot--idle') + '"></span><span>' + escape(connected ? 'Connected' : 'Saved') + '</span></div>'
+      : '<div class="header-brand"><div class="brand-mark" aria-hidden="true">' + knightIcon() + '</div>' +
+        '<p class="brand-word">Knightline</p></div>' +
+        '<div class="header-status"><span class="status-dot ' + (connected ? '' : 'status-dot--idle') + '"></span>' +
+        '<span>' + escape(label) + '</span></div>';
   }
 
   function patchNavigation() {
@@ -198,16 +245,16 @@
       '<span class="rating-label">Private skill</span>' +
       (last ? '<span class="rating-delta">' + (last.delta >= 0 ? '+' : '') + escape(last.delta) + ' last game</span>' : '') +
       '</div></div><div class="hero-actions">' +
-      '<button class="button button--primary" type="button" data-action="nav-play"><span class="button-icon">♞</span> Play now</button>' +
+      '<button class="button button--primary" type="button" data-action="nav-play">' + icon('bot') + ' Play now</button>' +
       '<button class="button button--quiet" type="button" data-action="nav-learn">Open learning</button>' +
       '</div></article>' +
       (match ? resumeCard(match) : '') +
       roomStatusCard(match) +
       '<section class="quick-grid" aria-label="Ways to play">' +
-      quickCard('♞', 'Play Stockfish', 'Offline bot, clocks and private skill', 'setup-bot') +
-      quickCard('⌁', 'Nearby game', 'Bluetooth on two Knightline phones', 'transport-menu') +
-      quickCard('◌', 'Private room', 'Online peer-to-peer room code', 'online-menu') +
-      quickCard('✦', 'Learn an opening', 'Guided lines with progressive hints', 'nav-learn') +
+      quickCard('bot', 'Play Stockfish', 'Offline bot, clocks and private skill', 'setup-bot') +
+      quickCard('bluetooth', 'Nearby game', 'Bluetooth on two Knightline phones', 'transport-menu') +
+      quickCard('room', 'Private room', 'Online peer-to-peer room code', 'online-menu') +
+      quickCard('learn', 'Learn an opening', 'Guided lines with progressive hints', 'nav-learn') +
       '</section>' +
       '<article class="surface home-activity"><div class="section-heading"><div><p class="eyebrow">Local only</p><h2 class="surface-title">Your private rating</h2></div>' +
       '<button class="section-action" type="button" data-action="nav-profile">View profile</button></div>' +
@@ -228,7 +275,9 @@
 
   function roomStatusCard(match) {
     const transport = object(model.transport, {});
-    if (match || (!transport.ready && transport.kind !== 'online')) return '';
+    const activelyOpening = transport.kind === 'online' &&
+      /opening|waiting|connecting|created|join/i.test(String(transport.status || ''));
+    if (match || (!transport.ready && !activelyOpening)) return '';
     const roomName = String(transport.peer || '').trim() || 'Private room';
     if (transport.ready) {
       const action = transport.hosting ? 'Set up a game' : 'Suggest a game';
@@ -242,9 +291,9 @@
       escape(transport.status || roomName + ' is opening. Keep Knightline open while your friend joins.') + '</p></article>';
   }
 
-  function quickCard(icon, title, detail, action) {
+  function quickCard(iconName, title, detail, action) {
     return '<button class="quick-card" type="button" data-action="' + action + '"><span class="quick-icon" aria-hidden="true">' +
-      icon + '</span><span class="quick-label">' + escape(title) + '</span><span class="quick-meta">' + escape(detail) + '</span></button>';
+      icon(iconName) + '</span><span class="quick-label">' + escape(title) + '</span><span class="quick-meta">' + escape(detail) + '</span><span class="quick-chevron" aria-hidden="true">›</span></button>';
   }
 
   function renderPlay() {
@@ -259,10 +308,10 @@
       '<article class="surface"><div class="section-heading"><div><h2 class="surface-title">Play Stockfish</h2><p class="subtitle">Choose a clock and a level. Hints turn it into Practice.</p></div></div>' +
       '<div class="hero-actions"><button class="button button--primary" type="button" data-action="setup-bot">Set up bot game</button></div></article>' +
       '<div class="quick-grid">' +
-      quickCard('⇄', 'Pass & play', 'Two people, one device', 'setup-pass') +
-      quickCard('⌁', 'Nearby Bluetooth', 'No internet required', 'transport-menu') +
-      quickCard('◌', 'Private Peer room', 'Invite only, internet for signaling', 'online-menu') +
-      quickCard('▣', 'Saved board', model.match ? 'Resume where you stopped' : 'No game in progress', model.match ? 'resume' : 'setup-bot') +
+      quickCard('pass', 'Pass & play', 'Two people, one device', 'setup-pass') +
+      quickCard('bluetooth', 'Nearby Bluetooth', 'No internet required', 'transport-menu') +
+      quickCard('room', 'Private Peer room', 'Invite only, internet for signaling', 'online-menu') +
+      quickCard('save', 'Saved board', model.match ? 'Resume where you stopped' : 'No game in progress', model.match ? 'resume' : 'setup-bot') +
       '</div>' +
       '<article class="surface"><p class="eyebrow">Match integrity</p><p class="body-copy">A clean standard game can update your on-device private skill estimate. Hints, takebacks, lessons and review branches are clearly labelled Practice.</p></article></section>';
   }
@@ -325,34 +374,40 @@
     const finished = winner >= 0;
     const opponentActive = !finished && Number(clock.active) !== Number(match.me);
     const youActive = !finished && Number(clock.active) === Number(match.me);
+    const position = object(match.position, {});
+    const evaluationEnabled = !!match.evaluationEnabled;
+    const material = materialBalance(array(position.b));
     main.innerHTML =
       '<section class="screen screen--game"><div class="game-topline"><div><p class="eyebrow">' + escape(match.practice || 'Practice') +
       '</p><p class="game-name">' + escape(match.yourTurn ? 'Your move' : finished ? gameResult(match) : 'Board in play') + '</p></div>' +
-      '<button class="eval-chip" type="button" data-action="engine-info" aria-label="Stockfish evaluation ' + escape(coach.evaluation || 'not ready') + '"><span class="eval-bar"></span>' +
-      '<span data-evaluation>' + escape(coach.evaluation || '…') + '</span></button></div>' +
-      playerCard(match.opponent || 'Opponent', match.opponentDetail || 'Private match', initials(match.opponent || 'OP'), clockForOpponent(match, clock), opponentActive, true) +
-      '<div id="board-host">' + boardMarkup(object(match.position, {}), Number(match.me), true) + '</div>' +
-      playerCard(match.you || 'You', match.youDetail || 'Your side', 'ME', clockForYou(match, clock), youActive, false) +
+      (evaluationEnabled ? '<button class="eval-chip" type="button" data-action="engine-info" aria-label="Stockfish evaluation ' + escape(coach.evaluation || 'not ready') + '. ' + escape(coach.evaluationState || 'Analyzing') + '">' +
+      '<span class="eval-label">EVAL</span><span data-evaluation>' + escape(coach.evaluation || '—') + '</span><span class="eval-state">' + escape(coach.evaluationState || 'Analyzing') + '</span></button></div>' +
+      '' : '<span class="game-state-pill">' + icon('check') + escape(finished ? 'Complete' : match.yourTurn ? 'Your turn' : 'In play') + '</span></div>') +
+      playerCard(match.opponent || 'Opponent', playerDetail(match.opponentDetail || 'Private match', material, 1 - Number(match.me)), initials(match.opponent || 'OP'), clockForOpponent(match, clock), opponentActive, !!match.solo, 'opponent') +
+      '<div id="board-host" class="board-stage">' + boardLayout(position, Number(match.me), true, coach, evaluationEnabled) + '</div>' +
+      playerCard(match.you || 'You', playerDetail(match.youDetail || 'Your side', material, Number(match.me)), 'ME', clockForYou(match, clock), youActive, false, 'you') +
       coachMarkup(coach, match, finished) +
       '<p class="turn-note">' + escape(finished ? (match.note || gameResult(match)) : (match.lastMove || match.note || (match.yourTurn ? 'Choose a piece to see legal destinations.' : 'Waiting for the next move.'))) + '</p>' +
       gameActions(match, finished) + '</section>';
     attachBoardInteractions();
   }
 
-  function playerCard(name, detail, initialsValue, clock, active, bot) {
+  function playerCard(name, detail, initialsValue, clock, active, bot, clockRole) {
     return '<article class="player-card' + (active ? ' player-card--active' : '') + '"><span class="avatar' + (bot ? ' avatar--bot' : '') + '">' +
       escape(initialsValue) + '</span><div class="player-copy"><p class="player-name">' + escape(name) + '</p><p class="player-meta">' +
-      escape(detail) + '</p></div><span class="clock' + (active ? ' clock--active' : '') + '" data-clock="' + (bot ? 'opponent' : 'you') + '">' +
+      escape(detail) + '</p></div><span class="clock' + (active ? ' clock--active' : '') + '" data-clock="' + escape(clockRole) + '">' +
       escape(clock) + '</span></article>';
   }
 
   function coachMarkup(coach, match, finished) {
     if (finished) return '';
     if (!coach.copy && !coach.heading) return '';
-    return '<article class="coach-card"><div class="coach-kicker"><span>✦</span><span>' + escape(coach.heading || 'Position coach') + '</span></div>' +
-      '<p class="coach-copy">' + escape(coach.copy || 'Stockfish is preparing a useful thought.') + '</p>' +
-      (coach.action ? '<button class="button button--mint button--compact" type="button" data-action="coach">' + escape(coach.action) + '</button>' : '') +
-      '</article>';
+    const stage = Math.max(0, Math.min(3, Number(coach.stage) || 0));
+    const total = coach.kind === 'lesson' ? 3 : 2;
+    const progress = '<span class="coach-progress" aria-label="Hint stage ' + stage + ' of ' + total + '">' +
+      Array.from({length: total + 1}, (_, index) => '<i class="' + (index <= stage ? 'is-active' : '') + '"></i>').join('') + '</span>';
+    return '<article class="coach-card"><div class="coach-icon">' + icon('hint') + '</div><div class="coach-body"><div class="coach-heading"><div class="coach-kicker">' + escape(coach.heading || 'Position coach') + '</div>' + progress + '</div>' +
+      '<p class="coach-copy">' + escape(coach.copy || 'Stockfish is preparing a useful thought.') + '</p></div></article>';
   }
 
   function gameActions(match, finished) {
@@ -360,25 +415,32 @@
       return '<div class="game-actions"><button class="button button--primary" type="button" data-action="rematch">Rematch</button>' +
         '<button class="button" type="button" data-action="review-open">Review</button><button class="button" type="button" data-action="game-menu">More</button></div>';
     }
-    return '<div class="game-actions">' +
-      (object(match.coach, {}).action ? '<button class="button button--primary" type="button" data-action="coach">' + escape(match.coach.action) + '</button>' :
-        '<button class="button" type="button" data-action="moves">Moves</button>') +
-      '<button class="button" type="button" data-action="moves">Moves</button><button class="button" type="button" data-action="game-menu">More</button></div>';
+    const coachState = object(match.coach, {});
+    const coachAction = coachState.available ? coachState.action : '';
+    const takeback = !!match.canTakeback;
+    const count = (coachAction ? 1 : 0) + (takeback ? 1 : 0) + 2;
+    return '<div class="game-actions game-actions--' + count + '">' +
+      (coachAction ? '<button class="button button--primary" type="button" data-action="coach" ' + (coachState.loading ? 'disabled aria-busy="true"' : '') + '>' + icon('hint') + escape(coachAction) + '</button>' : '') +
+      (takeback ? '<button class="button" type="button" data-action="takeback">' + icon('undo') + 'Take back</button>' : '') +
+      '<button class="button" type="button" data-action="moves">' + icon('moves') + 'Moves</button><button class="button" type="button" data-action="game-menu">' + icon('more') + 'More</button></div>';
   }
 
   function renderReview() {
     const review = object(model.review, {});
     if (!review.available) { renderGame(); return; }
+    const liveGame = !!review.liveGame;
+    const playedScore = liveGame ? '—' : (review.playedScore || '…');
+    const bestScore = liveGame ? '—' : (review.bestScore || '…');
     main.innerHTML =
-      '<section class="screen screen--game"><div class="game-topline"><div><p class="eyebrow">Game review</p><p class="game-name">Move ' +
-      escape(Math.ceil(Number(review.index) / 2)) + ' · ' + escape(Number(review.index) % 2 ? 'White' : 'Black') + '</p></div>' +
-      '<button class="button button--compact" type="button" data-action="review-back">Done</button></div>' +
-      '<div id="board-host">' + boardMarkup(object(review.position, {}), 0, false) + '</div>' +
-      '<article class="surface review-summary"><div><span class="result-badge">Stockfish review</span><p class="body-copy">' +
-      escape(review.reason || 'Analysis is preparing.') + '</p></div><span class="review-score">' + escape(review.bestScore || '…') + '</span></article>' +
+      '<section class="screen screen--game"><div class="review-position-line"><strong>Move ' +
+      escape(Math.ceil(Number(review.index) / 2)) + ' · ' + escape(Number(review.index) % 2 ? 'White' : 'Black') + '</strong><span>Position ' + escape(review.index) + ' of ' + escape(review.total) + '</span></div>' +
+      '<div id="board-host" class="board-stage">' + boardLayout(object(review.position, {}), Number(review.me || 0), false, {}, false) + '</div>' +
+      '<article class="surface review-summary"><div><span class="result-badge">' + (liveGame ? 'Move explorer' : 'Stockfish review') + '</span><p class="body-copy">' +
+      escape(liveGame ? 'Explore the played position now. Full engine review starts when the game ends.' : (review.reason || 'Analysis is preparing.')) +
+      '</p></div><div class="review-scores"><div><span>Played</span><strong>' + escape(playedScore) + '</strong></div><div><span>Best</span><strong>' + escape(bestScore) + '</strong></div></div></article>' +
       '<div class="tab-row" role="tablist" aria-label="Review view">' +
       reviewTab('Compare', 0, review.mode) + reviewTab('Played', 1, review.mode) + reviewTab('Best move', 2, review.mode) + '</div>' +
-      '<article class="surface"><p class="eyebrow">Position note</p><p class="body-copy">' + escape(review.report || 'Stockfish analysis appears after it completes.') +
+      '<article class="surface"><div class="review-step"><div><p class="eyebrow">Position note</p><p class="tiny">Position ' + escape(review.index) + ' of ' + escape(review.total) + '</p></div></div><p class="body-copy">' + escape(liveGame ? 'Finish the game to unlock scored Stockfish review. You can still compare positions and branch from here.' : (review.report || 'Stockfish analysis appears after it completes.')) +
        '</p><div class="button-row button-row--review"><button class="button" type="button" data-action="review-prev" ' + (review.canPrevious ? '' : 'disabled') +
       '>← Previous</button><button class="button" type="button" data-action="review-next" ' + (review.canNext ? '' : 'disabled') + '>Next →</button></div>' +
        (review.canBranch ? '<button class="button button--quiet button--wide review-branch" type="button" data-action="review-branch">Play from this position</button>' : '') +
@@ -416,12 +478,41 @@
       const rankLabel = visual % 8 === 0 ? '<span class="coordinate coordinate--rank">' + (me === 1 ? Math.floor(visual / 8) + 1 : 8 - Math.floor(visual / 8)) + '</span>' : '';
       const fileLabel = visual >= 56 ? '<span class="coordinate coordinate--file">' + String.fromCharCode(97 + (me === 1 ? 7 - (visual % 8) : visual % 8)) + '</span>' : '';
       cells.push('<button class="square' + (dark ? ' square--dark' : '') + selectedClass + legalClass + lastClass + coachClass +
-        '" type="button" data-square="' + square + '" aria-label="' + escape(label) + '"' + (interactive ? '' : ' disabled') + '>' +
+        '" type="button" data-square="' + square + '" aria-label="' + escape(label) + '"' + (interactive && !movePending ? '' : ' disabled') + '>' +
         rankLabel + fileLabel + pieceSvg(piece) + '</button>');
     }
-    return '<div class="board-shell" data-board-interactive="' + (interactive ? 'true' : 'false') + '"><div class="board" role="grid" aria-label="Chess board">' +
+    return '<div class="board-shell' + (movePending ? ' board-shell--pending' : '') + '" data-board-interactive="' + (interactive && !movePending ? 'true' : 'false') + '"><div class="board" role="grid" aria-label="Chess board">' +
       cells.join('') + arrowMarkup(position, me) + '</div>' +
       '<span class="board-accessibility-note">Tap a piece, then a legal destination. Board orientation follows your color.</span></div>';
+  }
+
+  function boardLayout(position, me, interactive, coach, evaluationEnabled) {
+    const meter = evaluationEnabled ? evaluationMeter(coach) : '';
+    return '<div class="board-layout' + (evaluationEnabled ? ' board-layout--evaluated' : '') + '">' + meter + boardMarkup(position, me, interactive) + '</div>';
+  }
+
+  function evaluationMeter(coach) {
+    const text = String(coach && coach.evaluation || '');
+    let white = 50;
+    const numeric = Number(text.replace('\u2212', '-'));
+    if (Number.isFinite(numeric)) white = 50 + (numeric / (Math.abs(numeric) + 4)) * 44;
+    else if (/^#-/.test(text)) white = 4;
+    else if (/^#/.test(text)) white = 96;
+    white = Math.max(4, Math.min(96, white));
+    const top = (100 - white).toFixed(1);
+    return '<div class="eval-rail" role="img" aria-label="White evaluation share ' + Math.round(white) + ' percent"><svg viewBox="0 0 10 100" preserveAspectRatio="none" aria-hidden="true"><rect class="eval-rail-fill" x="0" y="' + top + '" width="10" height="' + white.toFixed(1) + '"></rect></svg></div>';
+  }
+
+  function materialBalance(board) {
+    const values = [0, 1, 3, 3, 5, 9, 0];
+    let balance = 0;
+    board.forEach((piece) => { balance += (piece > 0 ? 1 : piece < 0 ? -1 : 0) * values[Math.abs(Number(piece) || 0)]; });
+    return balance;
+  }
+
+  function playerDetail(detail, balance, side) {
+    const advantage = side === 0 ? balance : -balance;
+    return detail + (advantage > 0 ? '  ·  +' + advantage : '');
   }
 
   function squareLabel(square, piece, legal, selected) {
@@ -440,42 +531,33 @@
     const light = piece > 0;
     const kind = Math.abs(piece);
     const cls = 'piece-svg piece-svg--' + (light ? 'white' : 'black');
-    // This is the original Knightline Staunton-inspired set, translated from
-    // the native Canvas renderer rather than relying on platform font glyphs.
-    // Semantic classes deliberately keep the palette in CSS, while the SVG
-    // attributes provide a legible fallback for older WebViews.
-    const shape = (d) => '<path class="piece-main" d="' + d + '" fill="currentColor" stroke="currentColor" stroke-width="1.45" stroke-linejoin="round"></path>';
-    const base = (d) => '<path class="piece-base" d="' + d + '" fill="currentColor" stroke="currentColor" stroke-width="1.45" stroke-linejoin="round"></path>';
-    const oval = (cx, cy, rx, ry) => '<ellipse class="piece-main" cx="' + cx + '" cy="' + cy + '" rx="' + rx + '" ry="' + ry + '" fill="currentColor" stroke="currentColor" stroke-width="1.45"></ellipse>';
-    const detail = (d) => '<path class="piece-detail" d="' + d + '" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-opacity=".3"></path>';
-    const common = '<ellipse class="piece-shadow" cx="51" cy="87" rx="31" ry="5" fill="#000" opacity=".15"></ellipse>' +
-      base('M29 74H71L75 82H25Z') + base('M25 82H75L78 88H22Z') +
-      '<path class="piece-highlight" d="M30 79H70" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-opacity=".24"></path>';
+    const shape = (d) => '<path class="piece-main" d="' + d + '"></path>';
+    const detail = (d) => '<path class="piece-detail" d="' + d + '"></path>';
+    const circle = (cx, cy, r) => '<circle class="piece-main" cx="' + cx + '" cy="' + cy + '" r="' + r + '"></circle>';
+    // Keep the exact proportions of ChessLink's proven vector set. The first
+    // WebView draft improvised new silhouettes and lost the crisp, weighted
+    // Staunton look that already worked well in the native board.
+    const common = shape('M29 74H71L75 82H25Z') + shape('M25 82H75L78 88H22Z') + detail('M30 79H70');
     let figure = '';
     if (kind === 1) {
-      figure = shape('M40 39H60L62 66L72 78H28L38 66Z') + oval(50, 30, 15, 15);
+      figure = circle(50, 30, 15) + shape('M40 39H60L62 66 72 78H28L38 66Z');
     } else if (kind === 2) {
-      figure = shape('M29 76L34 59L49 43L33 48L23 41L39 24L42 12L50 20H65L76 38L74 62L70 77Z') +
-        detail('M47 31L51 30M29 41H35M58 37L62 49');
+      figure = shape('M29 76 34 59 49 43 33 48 23 41 39 24 42 12 50 20 65 20 76 38 74 62 70 77Z') +
+        detail('M47 31 51 30M29 41H35M58 37 62 49');
     } else if (kind === 3) {
-      figure = shape('M42 43H58L60 63L71 77H29L40 63Z') +
-        shape('M50 13C26 31 29 47 50 49C72 47 74 31 50 13Z') + detail('M53 24L44 36') + oval(50, 11, 4, 4);
+      figure = shape('M42 43H58L60 63 71 77H29L40 63Z') +
+        shape('M50 13C26 31 29 47 50 49 72 47 74 31 50 13Z') + detail('M53 24 44 36') + circle(50, 11, 4);
     } else if (kind === 4) {
-      figure = shape('M33 39H67L64 65L72 77H28L36 65Z') +
-        shape('M27 15H38V24H45V15H55V24H62V15H73L70 40H30Z') + detail('M33 46H67');
+      figure = shape('M33 39H67L64 65 72 77H28L36 65Z') + shape('M27 15H38V24H45V15H55V24H62V15H73L70 40H30Z') + detail('M33 46H67');
     } else if (kind === 5) {
-      figure = shape('M39 45H61L62 62L72 77H28L38 62Z') +
-        shape('M26 25L39 34L50 17L61 34L74 25L65 49H35Z') +
-        oval(27, 23, 4, 4) + oval(50, 14, 4, 4) + oval(73, 23, 4, 4) + detail('M37 53H63');
+      figure = shape('M39 45H61L62 62 72 77H28L38 62Z') + shape('M26 25 39 34 50 17 61 34 74 25 65 49H35Z') +
+        circle(27, 23, 4) + circle(50, 14, 4) + circle(73, 23, 4) + detail('M37 53H63');
     } else {
-      figure = shape('M37 42H63L60 61L72 77H28L40 61Z') +
-        shape('M36 44C15 21 41 20 50 30C60 20 85 21 64 44Z') +
+      figure = shape('M37 42H63L60 61 72 77H28L40 61Z') +
+        shape('M36 44C15 21 41 20 50 30 60 20 85 21 64 44Z') +
         shape('M46 8H54V15H62V22H54V29H46V22H38V15H46Z') + detail('M36 49H64');
     }
-    // The native art is deliberately tall. Narrowing the SVG viewport a little
-    // preserves that elegant height while giving each silhouette enough visual
-    // weight on a phone board.
-    return '<svg class="' + cls + '" viewBox="8 0 84 100" aria-hidden="true">' + figure + common + '</svg>';
+    return '<svg class="' + cls + '" viewBox="0 0 100 100" aria-hidden="true"><ellipse class="piece-shadow" cx="51" cy="87" rx="31" ry="5"></ellipse>' + figure + common + '</svg>';
   }
 
   function arrowMarkup(position, me) {
@@ -578,10 +660,12 @@
   }
 
   function tryMove(from, to) {
+    if (movePending) return false;
     const position = object(model.match && model.match.position, {});
     const valid = array(position.moves).some((move) => Number(move[0]) === from && Number(move[1]) === to);
     if (!valid) return false;
     selectedSquare = null;
+    movePending = true;
     send('match.move', {from: from, to: to});
     refreshBoardOnly();
     return true;
@@ -633,12 +717,12 @@
     const primaryLabel = bot ? 'Play ' : remote ? (remoteHosting ? 'Invite · ' : 'Suggest · ') : 'Start ';
     return '<div class="sheet-heading"><div><p class="eyebrow">' + (bot ? 'Offline bot' : remote ? 'Private room' : 'One device') + '</p><h2 id="sheet-title" class="sheet-title">' +
       (bot ? 'Set up your game' : remote ? (remoteHosting ? 'Invite a friend' : 'Suggest a game') : 'Pass & play') + '</h2><p class="sheet-subtitle">' +
-      (bot ? 'Choose your time and opponent. Changing a choice stays in this sheet.' : remote ? 'Choose a clock. This sheet stays put while you decide.' : 'Hand the phone over after every move.') + '</p></div><button class="icon-button" type="button" data-sheet-close aria-label="Close">×</button></div>' +
+      (bot ? 'Choose a time and opponent. Hints make this a Practice game.' : remote ? 'Choose a clock. This sheet stays put while you decide.' : 'Hand the phone over after every move.') + '</p></div><button class="icon-button" type="button" data-sheet-close aria-label="Close">' + icon('close') + '</button></div>' +
       '<section class="sheet-section"><p class="sheet-label">Time control</p><div class="choice-grid" data-choice-group="clock">' +
       clockNames.map((name, index) => choiceButton('clock', index, name, index === 4 ? 'No clock' : name.replace(' | ', ' min + '), overlay.clock === index)).join('') + '</div></section>' +
       (bot ? '<section class="sheet-section"><p class="sheet-label">Opponent</p><div class="choice-grid" data-choice-group="level">' +
         strengthNames.map((name, index) => choiceButton('level', index, name, index === 0 ? 'Estimated 600' : index === 1 ? 'Estimated 1200' : 'Estimated 1800', overlay.level === index)).join('') +
-        '</div><p class="tiny">Stockfish runs locally. Hint use makes the game Practice.</p></section>' : '') +
+        '</div></section>' : '') +
       '<div class="sheet-footer"><button class="button button--quiet" type="button" data-sheet-close>Cancel</button><button class="button button--primary" type="button" data-setup-start>' +
       primaryLabel + escape(clockNames[overlay.clock]) + '</button></div>';
   }
@@ -665,7 +749,7 @@
   function openTransportMenu() {
     overlay = {kind: 'transport-menu'};
     openSheet('room');
-    sheetScroll.innerHTML = '<div class="sheet-heading"><div><p class="eyebrow">Private multiplayer</p><h2 id="sheet-title" class="sheet-title">Play together</h2><p class="sheet-subtitle">Knightline connects only to another Knightline install.</p></div><button class="icon-button" type="button" data-sheet-close aria-label="Close">×</button></div>' +
+    sheetScroll.innerHTML = '<div class="sheet-heading"><div><p class="eyebrow">Private multiplayer</p><h2 id="sheet-title" class="sheet-title">Play together</h2><p class="sheet-subtitle">Knightline connects only to another Knightline install.</p></div><button class="icon-button" type="button" data-sheet-close aria-label="Close">' + icon('close') + '</button></div>' +
       '<section class="sheet-section"><button class="button button--primary button--wide" type="button" data-transport="host">Host nearby game</button><button class="button button--wide" type="button" data-transport="join">Join nearby game</button></section>' +
       '<div class="online-note"><span aria-hidden="true">⌁</span><span>Bluetooth works in airplane mode after Android pairing and permission. Both players need Knightline Preview.</span></div>' +
       '<div class="sheet-footer"><button class="button button--quiet" type="button" data-sheet-close>Done</button></div>';
@@ -674,7 +758,7 @@
   function openOnlineMenu() {
     overlay = {kind: 'online-menu', code: ''};
     openSheet('room');
-    sheetScroll.innerHTML = '<div class="sheet-heading"><div><p class="eyebrow">Private online room</p><h2 id="sheet-title" class="sheet-title">Invite one friend</h2><p class="sheet-subtitle">Peer-to-peer gameplay. Internet is only needed for signaling and the direct connection.</p></div><button class="icon-button" type="button" data-sheet-close aria-label="Close">×</button></div>' +
+    sheetScroll.innerHTML = '<div class="sheet-heading"><div><p class="eyebrow">Private online room</p><h2 id="sheet-title" class="sheet-title">Invite one friend</h2><p class="sheet-subtitle">Peer-to-peer gameplay. Internet is only needed for signaling and the direct connection.</p></div><button class="icon-button" type="button" data-sheet-close aria-label="Close">' + icon('close') + '</button></div>' +
       '<section class="sheet-section"><label class="sheet-label" for="room-code">Room code</label><input id="room-code" class="input" maxlength="8" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="E.g. KNIGHT42"></section>' +
       '<section class="sheet-section"><button class="button button--primary button--wide" type="button" data-online="host">Create room</button><button class="button button--wide" type="button" data-online="join">Join room</button></section>' +
       '<div class="online-note"><span aria-hidden="true">◌</span><span>No accounts or public matchmaking. Share the code only with your friend.</span></div>';
@@ -701,7 +785,7 @@
     const transport = object(model.transport, {});
     const devices = array(transport.devices);
     sheetScroll.innerHTML = '<div class="sheet-heading"><div><p class="eyebrow">Nearby Bluetooth</p><h2 id="sheet-title" class="sheet-title">Join a Knightline game</h2><p class="sheet-subtitle">' +
-      escape(transport.status || 'Scanning…') + '</p></div><button class="icon-button" type="button" data-sheet-close aria-label="Close">×</button></div>' +
+      escape(transport.status || 'Scanning…') + '</p></div><button class="icon-button" type="button" data-sheet-close aria-label="Close">' + icon('close') + '</button></div>' +
       '<section class="sheet-section"><p class="sheet-label">Found phones</p>' +
       (devices.length ? devices.map((device) => '<button class="choice" type="button" data-device-index="' + escape(device.index) + '" aria-pressed="false"><span class="choice-main">' +
         escape(device.name) + '</span><span class="choice-detail">' + (device.paired ? 'Paired · connect' : 'Pair first in Android settings') + '</span></button>').join('') :
@@ -712,27 +796,31 @@
   function menuMarkup(payload) {
     const choices = array(payload.choices);
     return '<div class="sheet-heading"><div><p class="eyebrow">Private controls</p><h2 id="sheet-title" class="sheet-title">' + escape(payload.title || 'Menu') +
-      '</h2><p class="sheet-subtitle">' + escape(payload.subtitle || '') + '</p></div><button class="icon-button" type="button" data-sheet-close aria-label="Close">×</button></div>' +
-      '<section class="sheet-section">' + choices.map((choice) => '<button class="choice" type="button" data-native-action="' + escape(choice.id) +
-        '" aria-pressed="false"><span class="choice-main">' + escape(choice.title) + '</span><span class="choice-detail">' + escape(choice.detail) +
-        '</span></button>').join('') + '</section><div class="sheet-footer"><button class="button button--quiet" type="button" data-sheet-close>Done</button></div>';
+      '</h2><p class="sheet-subtitle">' + escape(payload.subtitle || '') + '</p></div><button class="icon-button" type="button" data-sheet-close aria-label="Close">' + icon('close') + '</button></div>' +
+      '<section class="sheet-section">' + choices.map((choice) => '<button class="choice choice-row" type="button" data-native-action="' + escape(choice.id) +
+        '" aria-pressed="false"><span class="choice-row-icon">' + icon(actionIcon(choice.id)) + '</span><span class="choice-row-copy"><span class="choice-main">' + escape(choice.title) + '</span><span class="choice-detail">' + escape(choice.detail) +
+        '</span></span><span class="choice-row-chevron" aria-hidden="true">›</span></button>').join('') + '</section><div class="sheet-footer"><button class="button button--quiet" type="button" data-sheet-close>Done</button></div>';
   }
 
   function movesMarkup(payload) {
     const moves = array(payload.moves);
     return '<div class="sheet-heading"><div><p class="eyebrow">Notation</p><h2 id="sheet-title" class="sheet-title">' + escape(payload.title || 'Move history') +
-      '</h2><p class="sheet-subtitle">' + escape(payload.subtitle || '') + '</p></div><button class="icon-button" type="button" data-sheet-close aria-label="Close">×</button></div>' +
-      (moves.length ? '<div class="move-list">' + moves.map((move) => '<div class="move-item"><span><span class="move-number">' + escape(move.ply) +
-        '.</span> ' + escape(move.move) + '</span><span class="tiny">' + escape(move.side) + '</span></div>').join('') + '</div>' :
+      '</h2><p class="sheet-subtitle">' + escape(payload.subtitle || '') + '</p></div><button class="icon-button" type="button" data-sheet-close aria-label="Close">' + icon('close') + '</button></div>' +
+      (moves.length ? '<div class="move-list">' + moves.map((move) => {
+        const ply = Math.max(1, Number(move.ply) || 1);
+        const turn = Math.floor((ply - 1) / 2) + 1;
+        const prefix = turn + (String(move.side) === 'Black' ? '…' : '.');
+        return '<div class="move-item"><span><span class="move-number">' + escape(prefix) + '</span> ' + escape(move.move) + '</span><span class="tiny">' + escape(move.side) + '</span></div>';
+      }).join('') + '</div>' :
         '<div class="empty-state">No moves yet.</div>') +
       '<div class="sheet-footer"><button class="button button--quiet" type="button" data-sheet-close>Close</button>' +
-      (payload.canReview ? '<button class="button button--primary" type="button" data-native-action="review.open">Open review</button>' : '') + '</div>';
+      (payload.canReview ? '<button class="button button--primary" type="button" data-native-action="review.open">' + (payload.liveGame ? 'Explore moves' : 'Open review') + '</button>' : '') + '</div>';
   }
 
   function chatMarkup(payload) {
     const messages = array(payload.messages);
     return '<div class="sheet-heading"><div><p class="eyebrow">Invite only</p><h2 id="sheet-title" class="sheet-title">' + escape(payload.title || 'Private chat') +
-      '</h2><p class="sheet-subtitle">' + escape(payload.subtitle || '') + '</p></div><button class="icon-button" type="button" data-sheet-close aria-label="Close">×</button></div>' +
+      '</h2><p class="sheet-subtitle">' + escape(payload.subtitle || '') + '</p></div><button class="icon-button" type="button" data-sheet-close aria-label="Close">' + icon('close') + '</button></div>' +
       '<div class="chat-log">' + (messages.length ? messages.map((message) => '<div class="chat-message' + (String(message).indexOf('You:') === 0 ? ' chat-message--self' : '') +
         '">' + escape(message) + '</div>').join('') : '<div class="tiny">No messages yet.</div>') + '</div>' +
       '<div class="chat-compose chat-compose--spaced"><input class="input" id="chat-text" maxlength="300" placeholder="Message your friend" ' + (payload.connected ? '' : 'disabled') +
@@ -741,7 +829,7 @@
 
   function informationMarkup(payload) {
     return '<div class="sheet-heading"><div><p class="eyebrow">Knightline</p><h2 id="sheet-title" class="sheet-title">' + escape(payload.title || 'Information') +
-      '</h2><p class="sheet-subtitle">' + escape(payload.subtitle || '') + '</p></div><button class="icon-button" type="button" data-sheet-close aria-label="Close">×</button></div>' +
+      '</h2><p class="sheet-subtitle">' + escape(payload.subtitle || '') + '</p></div><button class="icon-button" type="button" data-sheet-close aria-label="Close">' + icon('close') + '</button></div>' +
       (payload.detail ? '<article class="surface surface--flat"><p class="body-copy">' + escape(payload.detail) + '</p></article>' : '') +
       '<div class="sheet-footer"><button class="button button--primary" type="button" data-sheet-close>Done</button></div>';
   }
@@ -822,7 +910,8 @@
     const action = event.target.closest('[data-action]');
     if (action) {
       const value = action.dataset.action;
-      if (value === 'nav-play') go('play');
+      if (value === 'nav-home') go('home');
+      else if (value === 'nav-play') go('play');
       else if (value === 'nav-learn') go('learn');
       else if (value === 'nav-profile') go('profile');
       else if (value === 'setup-bot') openSetup('bot');
@@ -832,6 +921,7 @@
       else if (value === 'remote-setup') openSetup('remote');
       else if (value === 'resume') send('match.resume');
       else if (value === 'coach') send('coach.advance');
+      else if (value === 'takeback') send('match.takeback');
       else if (value === 'moves') send('match.openMoves');
       else if (value === 'game-menu') send('match.openMenu');
       else if (value === 'rematch') send('match.rematch');
@@ -932,6 +1022,12 @@
   });
 
   document.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter' && event.target && event.target.id === 'chat-text') {
+      event.preventDefault();
+      const sendButton = sheet.querySelector('[data-chat-send]:not([disabled])');
+      if (sendButton) sendButton.click();
+      return;
+    }
     if (!overlay) return;
     if (event.key === 'Escape' && overlay.kind !== 'confirm' && overlay.kind !== 'promotion') {
       event.preventDefault();
