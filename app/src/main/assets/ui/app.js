@@ -639,7 +639,7 @@
   }
 
   function selectSquare(square) {
-    if (!model.match || !model.match.yourTurn) return;
+    if (movePending || !model.match || !model.match.yourTurn) return;
     if (selectedSquare == null) {
       if (canSelectFrom(square)) {
         selectedSquare = square;
@@ -660,7 +660,7 @@
   }
 
   function tryMove(from, to) {
-    if (movePending) return false;
+    if (movePending || !model.match || !model.match.yourTurn) return false;
     const position = object(model.match && model.match.position, {});
     const valid = array(position.moves).some((move) => Number(move[0]) === from && Number(move[1]) === to);
     if (!valid) return false;
@@ -674,8 +674,30 @@
   function refreshBoardOnly() {
     const host = document.getElementById('board-host');
     if (!host || !model.match) return;
-    host.innerHTML = boardMarkup(object(model.match.position, {}), Number(model.match.me), true);
-    attachBoardInteractions();
+    const shell = host.querySelector('.board-shell');
+    if (!shell) return;
+    const position = object(model.match.position, {});
+    const pieces = array(position.b);
+    const targets = new Set(selectedSquare == null ? [] : array(position.moves)
+      .filter((move) => Number(move[0]) === selectedSquare)
+      .map((move) => Number(move[1])));
+    // Selection changes decoration, never layout. Replacing the host with
+    // boardMarkup used to remove board-layout and its evaluation rail, growing
+    // the board by 14px until the next native render. Keep the exact nodes so
+    // keyboard focus and pointer capture also survive selecting/deselecting.
+    shell.classList.toggle('board-shell--pending', movePending);
+    shell.dataset.boardInteractive = movePending ? 'false' : 'true';
+    shell.querySelectorAll('[data-square]').forEach((button) => {
+      const square = Number(button.dataset.square);
+      const piece = Number(pieces[square] || 0);
+      const selected = square === selectedSquare;
+      const legal = targets.has(square);
+      button.classList.toggle('square--selected', selected);
+      button.classList.toggle('square--legal', legal && !piece);
+      button.classList.toggle('square--capture', legal && !!piece);
+      button.setAttribute('aria-label', squareLabel(square, piece, legal, selected));
+      button.disabled = movePending;
+    });
   }
 
   function clockForYou(match, clock) {

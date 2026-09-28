@@ -38,7 +38,7 @@ Keep release-signing files outside the repository; `.gitignore` excludes keystor
 
 ## Validation status
 
-The current beta has passed native bridge/rating contract checks, JavaScript syntax checks, Android unit tests, and 35,704 assertions across the chess rules, tutor, timeline, review, and bot suites. Real Pixel emulator flows cover:
+The current beta has passed native bridge/rating contract checks, JavaScript syntax checks, and 35,704 assertions across the chess rules, tutor, timeline, review, and bot suites. Real Pixel emulator flows cover:
 
 - Home, setup, bot play, pass-and-play, move history, live review, Back behavior, save/resume, and confirmation flows at 100%, 130%, and 150% Android text scale.
 - In-place clock/strength selection whose sheet bounds and scroll position remain unchanged after every setting change.
@@ -48,6 +48,12 @@ The current beta has passed native bridge/rating contract checks, JavaScript syn
 - Airplane-mode launch, resume, coaching, and live Stockfish evaluation with `navigator.onLine` false.
 
 The private online room can create a PeerJS signaling session in the app. A final physical-phone-to-physical-phone online match still needs validation on a network with usable WebRTC relay/direct connectivity. Public PeerJS TURN hostnames did not resolve on the test emulator-to-phone network, so this beta does not claim universal PeerJS connectivity yet. Bluetooth and all local play remain usable offline.
+
+### Selection regression in v0.2.1
+
+Version 0.2.0 incorrectly replaced the board/evaluation layout when selecting a piece, widening the board by 14 CSS pixels. Version 0.2.1 updates highlights and legal targets on the existing square elements. The layout and evaluation rail stay mounted, and keyboard focus is preserved.
+
+`tests/webview-board-flow.mjs` exercises the installed Android app through real WebView touch input and the native chess session. It measures each animation frame during selection, switching pieces, deselection, keyboard activation, illegal taps, tap/drag moves, native replies, takeback, and hint overlays. The selection probe fails on v0.2.0 and passes on v0.2.1. See [the focused validation record](docs/validation-v0.2.1.md) for the tested configurations and limitations.
 
 ## Stockfish licensing
 
