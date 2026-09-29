@@ -3,8 +3,34 @@ package com.traillink;
 /** Presentation for both saved v3.1 reports and current Stockfish results. */
 public final class ChessReviewText {
     public final String report, reason, side, playedScore, bestScore;
+    public final String verdict, playedMove;
+    public final Double whiteScore;
+    public final Integer whiteMate;
+    public final String playedCompact, bestCompact;
     private ChessReviewText(String report, String reason, String side, String played, String best) {
         this.report=report;this.reason=reason;this.side=side;playedScore=played;bestScore=best;
+        String[] lines = report.split("\n");
+        verdict = lines.length > 0 ? lines[0] : "";
+        playedMove = lines.length > 1 && lines[1].startsWith("Played: ") ? lines[1].substring(8) : "";
+        Double numeric = null;
+        try { numeric = Double.parseDouble(played.replace(" pawns", "")) * (side.equals("Black") ? -1 : 1); }
+        catch (NumberFormatException ignored) { }
+        // Mate is not a centipawn score; leave a gap rather than inventing one.
+        whiteScore = numeric;
+        Integer mate = null;
+        if (played.startsWith("White mates in ")) mate = parseMate(played.substring(15), 1);
+        else if (played.startsWith("Black mates in ")) mate = parseMate(played.substring(15), -1);
+        else if (played.equals("White is checkmated")) mate = -1;
+        else if (played.equals("Black is checkmated")) mate = 1;
+        whiteMate = mate;
+        playedCompact = compactScore(side, played); bestCompact = compactScore(side, best);
+    }
+    private static Integer parseMate(String value, int sign) { try { return Integer.parseInt(value) * sign; } catch (NumberFormatException ignored) { return null; } }
+    static String compactScore(String side, String score) {
+        if (score.startsWith(side + " mates in ")) return "M" + score.substring((side + " mates in ").length());
+        if (score.contains(" mates in ")) return "−M" + score.substring(score.indexOf(" mates in ") + 10);
+        if (score.contains("checkmated")) return "−M0";
+        return score.replace(" pawns", "");
     }
     public static ChessReviewText from(String report) {
         String[] lines=report.split("\n");

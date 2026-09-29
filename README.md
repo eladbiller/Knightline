@@ -9,10 +9,12 @@ The interface is packaged inside the APK and served through Android's `WebViewAs
 - Complete native chess rules: legal move validation, castling, en passant, promotion, checkmate, stalemate, threefold repetition, and the 50-move rule.
 - Bundled Stockfish 16 NNUE for arm64-v8a, armeabi-v7a, and x86_64; Easy, Medium, and Hard bot levels; live numeric evaluation; and post-game review.
 - Offline bot games, pass-and-play, saved/resumed games, clocks, promotion, takebacks, and review branching.
+- Board-first game and review workspaces: essential controls fit the viewport. Review includes highlights, real engine move-quality titles, a scored graph, key moments, and isolated retry practice.
+- Six original offline mate-in-one puzzles with progressive hints, legal-move feedback, retry, Black-side positions, and native-stored completion. Puzzle practice never replaces the saved match.
 - Progressive coaching for bot play and guided lessons: concept, piece, move arrow, then Hide hint. Hint use clearly changes a game to Practice.
 - Native-stored Private Skill Rating: starts at 800; K=32 for the first 20 rated games then K=20; local history/deltas; bot anchors 600/1200/1800. It never claims a global ranking or leaderboard.
 - Knightline-only Bluetooth rooms and private PeerJS/WebRTC rooms, with native move validation and local chat.
-- A responsive dark tournament UI with a warm ivory board, original local SVG pieces, keyboard focus, square labels, safe-area handling, and dynamic-type reflow.
+- A responsive dark tournament UI with a cool tournament board, original local SVG pieces, clean translucent move arrows, keyboard focus, square labels, safe-area handling, and dynamic-type reflow.
 
 ## Architecture and security
 
@@ -38,13 +40,15 @@ Keep release-signing files outside the repository; `.gitignore` excludes keystor
 
 ## Validation status
 
-The current beta has passed native bridge/rating contract checks, JavaScript syntax checks, and 35,704 assertions across the chess rules, tutor, timeline, review, and bot suites. Real Pixel emulator flows cover:
+See [v0.3 flow validation](docs/validation-v0.3.0.md) for the current changes and limits. The native CLI suites pass 36,020 checks in total, including legacy core rules, tutor, timeline, bot, puzzle/review isolation, bridge, and rating checks. These are real Java `main` test runs, not an empty Gradle/JUnit result.
+
+Prior beta Pixel coverage includes:
 
 - Home, setup, bot play, pass-and-play, move history, live review, Back behavior, save/resume, and confirmation flows at 100%, 130%, and 150% Android text scale.
 - In-place clock/strength selection whose sheet bounds and scroll position remain unchanged after every setting change.
 - Live Stockfish evaluation, Hint → Show move → Hide hint, the on-board coaching arrow, accessible Take back, and persistent Practice reasons after process restart.
 - Correct pass-and-play player identities, independent clocks, turn handoff, board rotation, and no engine evaluation in a friend game.
-- Responsive reflow with no clipped visible text at 130%/150%; dense cards reflow instead of shrinking or truncating.
+- Dynamic-type reflow at 130%/150%. The v0.3 tests additionally caught and fixed WebView text-only zoom and the narrow-screen setup footer changing height.
 - Airplane-mode launch, resume, coaching, and live Stockfish evaluation with `navigator.onLine` false.
 
 The private online room can create a PeerJS signaling session in the app. A final physical-phone-to-physical-phone online match still needs validation on a network with usable WebRTC relay/direct connectivity. Public PeerJS TURN hostnames did not resolve on the test emulator-to-phone network, so this beta does not claim universal PeerJS connectivity yet. Bluetooth and all local play remain usable offline.

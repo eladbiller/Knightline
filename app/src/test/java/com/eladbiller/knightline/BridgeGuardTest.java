@@ -35,6 +35,11 @@ public final class BridgeGuardTest {
                 "Accepts a fresh top-level navigation request");
         check(BridgeGuard.requiresActiveMatch("match.move"), "Moves require an active session");
         check(BridgeGuard.requiresActiveMatch("chat.send"), "Chat is bound to an active session");
+        check(BridgeGuard.requiresActiveMatch("review.try"), "Review attempts are bound to a match");
+        check(BridgeGuard.requiresActiveMatch("review.jump"), "Review navigation is bound to a match");
+        check(!BridgeGuard.requiresActiveMatch("puzzle.start"), "Offline puzzles do not require a saved match");
+        check(guard.accept(1, "puzzle", "puzzle.move", 5, true).accepted, "Puzzle command is allowlisted");
+        check(!guard.accept(1, "puzzle", "puzzle.move", 5, true).accepted, "Puzzle replay is rejected");
         check(!BridgeGuard.requiresActiveMatch("nav.profile"), "Profile does not require a match");
         check(!BridgeGuard.matchesActiveSession("old", "current", true),
                 "Rejects commands from a stale session");

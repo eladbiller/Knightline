@@ -24,7 +24,9 @@ public final class BridgeGuard {
             "match.takeback", "match.resign", "match.rematch", "match.retryBot",
             "match.openMoves", "match.openMenu", "match.clear", "match.inviteRemote", "match.suggestRemote",
             "learn.start", "promotion.choose", "coach.advance",
-            "review.open", "review.previous", "review.next", "review.mode", "review.branch",
+            "puzzle.start", "puzzle.move", "puzzle.hint", "puzzle.retry", "puzzle.next",
+            "review.open", "review.previous", "review.next", "review.mode", "review.branch", "review.jump",
+            "review.retry", "review.try", "review.cancelRetry",
             "transport.host", "transport.join", "transport.scan", "transport.connect",
             "transport.disconnect", "transport.settings",
             "online.host", "online.join", "chat.open", "chat.send", "engine.info"

@@ -23,7 +23,6 @@ import android.widget.TextView;
 import android.graphics.Typeface;
 
 import androidx.core.view.ViewCompat;
-import androidx.core.view.WindowInsetsCompat;
 import androidx.webkit.WebViewAssetLoader;
 
 import com.eladbiller.knightline.AndroidPrivateRatingStorage;
@@ -55,8 +54,6 @@ public final class KnightlineActivity extends ChessLinkActivity {
     private final byte[] blockedResource = new byte[0];
     private WebView webView;
     private View startupOverlay;
-    private int webViewImeInset;
-    private int baseBottomInset = -1;
     private WebMessagePort messagePort;
     private boolean pageLoaded;
     private boolean pageCommitted;
@@ -79,6 +76,10 @@ public final class KnightlineActivity extends ChessLinkActivity {
     private boolean usedTakeback;
     private boolean usedReviewBranch;
     private SkillRatingStore privateRating;
+    private ChessPuzzles puzzle;
+    private String puzzleToken = "";
+    private ChessReviewPractice reviewPractice;
+    private String reviewPracticeToken = "";
 
     @Override public void onCreate(Bundle bundle) {
         // MainActivity restores its native save and calls the virtual home().
@@ -102,6 +103,10 @@ public final class KnightlineActivity extends ChessLinkActivity {
         // start on some emulators.
         webView.setBackgroundColor(Color.rgb(7, 16, 30));
         WebSettings settings = webView.getSettings();
+        // CSS receives Android's font preference with native state. WebView's
+        // independent text zoom would otherwise enlarge glyphs without their
+        // rem-based layout tracks, creating clipped text at large font sizes.
+        settings.setTextZoom(100);
         settings.setJavaScriptEnabled(true);
         settings.setDomStorageEnabled(false);
         settings.setDatabaseEnabled(false);
@@ -161,14 +166,19 @@ public final class KnightlineActivity extends ChessLinkActivity {
         startupOverlay = createStartupOverlay();
         root.addView(startupOverlay, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
-        ViewCompat.setOnApplyWindowInsetsListener(root, (view, insets) -> {
-            // WebKit's transitive AndroidX Core is intentionally kept lean for
-            // this beta. Its compat bottom inset grows to include the IME; retain
-            // the smallest (navigation-only) value and apply only the increase.
-            int bottom = insets.getSystemWindowInsetBottom();
-            if (baseBottomInset < 0 || bottom < baseBottomInset) baseBottomInset = bottom;
-            applyWebViewImeInset(Math.max(0, bottom - baseBottomInset));
-            return insets;
+        root.setOnApplyWindowInsetsListener((view, insets) -> {
+            // Own all system/IME insets in one place. WebView safe-area reports
+            // omitted the gesture bar on some builds, putting controls beneath
+            // it. Consume them after resizing the real HTML viewport.
+            if (Build.VERSION.SDK_INT >= 30) {
+                android.graphics.Insets safe = insets.getInsets(android.view.WindowInsets.Type.systemBars()
+                        | android.view.WindowInsets.Type.displayCutout() | android.view.WindowInsets.Type.ime());
+                view.setPadding(safe.left, safe.top, safe.right, safe.bottom);
+                return android.view.WindowInsets.CONSUMED;
+            }
+            view.setPadding(insets.getSystemWindowInsetLeft(), insets.getSystemWindowInsetTop(),
+                    insets.getSystemWindowInsetRight(), insets.getSystemWindowInsetBottom());
+            return insets.consumeSystemWindowInsets();
         });
         setContentView(root);
         ViewCompat.requestApplyInsets(root);
@@ -244,14 +254,18 @@ public final class KnightlineActivity extends ChessLinkActivity {
         webView.postDelayed(this::dismissStartupOverlay, 100L);
     }
 
-    private void applyWebViewImeInset(int inset) {
-        if (webView == null || webViewImeInset == inset) return;
-        webViewImeInset = inset;
-        ViewGroup.LayoutParams raw = webView.getLayoutParams();
-        if (!(raw instanceof FrameLayout.LayoutParams)) return;
-        FrameLayout.LayoutParams params = (FrameLayout.LayoutParams) raw;
-        params.bottomMargin = inset;
-        webView.setLayoutParams(params);
+    @Override public void onWindowFocusChanged(boolean hasFocus) {
+        super.onWindowFocusChanged(hasFocus);
+        if (!hasFocus) return;
+        if (Build.VERSION.SDK_INT >= 30) {
+            getWindow().getInsetsController().setSystemBarsAppearance(0,
+                    android.view.WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS
+                            | android.view.WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS);
+        } else {
+            View decor = getWindow().getDecorView();
+            decor.setSystemUiVisibility(decor.getSystemUiVisibility()
+                    & ~View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR & ~View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR);
+        }
     }
 
     private WebResourceResponse localOnly(WebViewAssetLoader loader, Uri request) {
@@ -295,6 +309,9 @@ public final class KnightlineActivity extends ChessLinkActivity {
     }
 
     @Override void renderGame() {
+        // A delayed match/engine callback may refresh data, but must not eject
+        // the player from an independent puzzle into the saved game.
+        if ("puzzle".equals(requestedScreen)) { publishState(); return; }
         if (state == null) { home(); return; }
         reviewing = false;
         inGame = true;
@@ -530,12 +547,14 @@ public final class KnightlineActivity extends ChessLinkActivity {
     }
 
     private void handleCommand(String type, JSONObject payload) {
+        if (type.startsWith("review.") && !"review.retry".equals(type) && !"review.try".equals(type)) reviewPractice = null;
         switch (type) {
             case "nav.home": home(); return;
             case "nav.play": requestedScreen = "play"; publishState(); return;
             case "nav.learn": requestedScreen = "learn"; publishState(); return;
             case "nav.profile": requestedScreen = "profile"; publishState(); return;
             case "nav.back":
+                if ("puzzle".equals(requestedScreen)) { requestedScreen = "learn"; publishState(); return; }
                 if (reviewing) renderGame(); else if (inGame) home(); else requestedScreen = "home";
                 publishState(); return;
             case "ui.closeOverlay": return;
@@ -543,8 +562,13 @@ public final class KnightlineActivity extends ChessLinkActivity {
             case "confirm.cancel": cancelConfirmation(payload.optString("token", "")); return;
             case "match.startBot": startBotFromPayload(payload); return;
             case "match.startPass": startPassFromPayload(payload); return;
-            case "match.resume": if (local || host) showSnapshot(); else renderGame(); return;
+            case "match.resume": requestedScreen = "game"; if (local || host) showSnapshot(); else renderGame(); return;
             case "learn.start": beginLesson(payload); return;
+            case "puzzle.start": startPuzzle(payload.optInt("index", -1)); return;
+            case "puzzle.move":
+            case "puzzle.hint":
+            case "puzzle.retry":
+            case "puzzle.next": puzzleCommand(type, payload); return;
             case "match.move": moveFromPayload(payload); return;
             case "promotion.choose": choosePromotion(payload); return;
             case "coach.advance": advanceCoach(); return;
@@ -561,7 +585,27 @@ public final class KnightlineActivity extends ChessLinkActivity {
             case "review.previous": if (reviewIndex > 1) { reviewIndex--; review(); } return;
             case "review.next": if (reviewIndex < reviewTotal() - 1) { reviewIndex++; review(); } return;
             case "review.mode": reviewMode = clamp(payload.optInt("mode", 0), 0, 2); review(); return;
+            case "review.jump":
+                int target = payload.optInt("index", -1);
+                if (target < 1 || target >= reviewTotal()) { reject("That move is not in this game."); return; }
+                reviewIndex = target; review(); return;
             case "review.branch": continueReview(); return;
+            case "review.retry":
+                int ply = reviewIndex - 1;
+                if (!"review".equals(requestedScreen) || !(local || host) || game == null || game.winner < 0
+                        || ply < 0 || ply >= game.analysisBest.size() || game.analysisBest.get(ply) == null) {
+                    reject("Wait for Stockfish to finish this move."); return;
+                }
+                reviewPractice = new ChessReviewPractice(ChessAnalysis.position(game, ply), game.analysisBest.get(ply));
+                reviewPracticeToken = UUID.randomUUID().toString();
+                reviewMode = 0; publishState(); return;
+            case "review.try":
+                if (!"review".equals(requestedScreen) || reviewPractice == null
+                        || !reviewPracticeToken.equals(payload.optString("token", ""))
+                        || payload.optInt("index", -1) != reviewIndex) { reject("That review position has changed."); publishState(); return; }
+                reviewPractice.play(payload.optInt("from", -1), payload.optInt("to", -1), payload.optInt("promotion", 5));
+                publishState(); return;
+            case "review.cancelRetry": publishState(); return;
             case "transport.host": startBluetooth(true); return;
             case "transport.join": startBluetooth(false); return;
             case "transport.scan": scan(); return;
@@ -826,6 +870,7 @@ public final class KnightlineActivity extends ChessLinkActivity {
         try {
             root.put("match", matchPayload());
             root.put("review", reviewPayload());
+            root.put("puzzle", puzzlePayload());
         } catch (Exception ignored) { }
         return root;
     }
@@ -908,12 +953,44 @@ public final class KnightlineActivity extends ChessLinkActivity {
         JSONObject position = obj("b", boardState == null ? new JSONArray() : boardState, "turn", ply % 2,
                 "winner", 2, "id", 0, "moves", new JSONArray());
         try {
-            if (played != null && reviewMode != 2) { position.put("playedFrom", played.optInt(0, -1)); position.put("playedTo", played.optInt(1, -1)); }
+            if (played != null && reviewMode != 2) {
+                position.put(reviewMode == 1 ? "lastA" : "playedFrom", played.optInt(0, -1));
+                position.put(reviewMode == 1 ? "lastZ" : "playedTo", played.optInt(1, -1));
+            }
             if (best != null && reviewMode != 1) { position.put("bestFrom", best.optInt(0, -1)); position.put("bestTo", best.optInt(1, -1)); }
         } catch (Exception ignored) { }
-        return obj("available", true, "index", reviewIndex, "total", total - 1, "mode", reviewMode, "me", me,
+        JSONArray timeline = new JSONArray();
+        String notation = "Move";
+        for (int index = 1; index < total; index++) {
+            String note = local || host ? (index - 1 < game.analysis.size() ? game.analysis.get(index - 1) : "") : analysisNotes.optString(index, "");
+            ChessReviewText text = ChessReviewText.from(note);
+            String san = text.playedMove;
+            if ((local || host) && san.isEmpty()) {
+                int[] move = game.chessMoves.get(index - 1);
+                san = ChessNotation.san(ChessAnalysis.position(game, index - 1), move[0], move[1], move[2]);
+            }
+            if (san.isEmpty()) san = "Move " + index;
+            timeline.put(obj("index", index, "notation", san, "verdict", text.verdict,
+                    "whiteScore", text.whiteScore == null ? JSONObject.NULL : text.whiteScore,
+                    "whiteMate", text.whiteMate == null ? JSONObject.NULL : text.whiteMate));
+            if (index == reviewIndex) notation = san;
+        }
+        if (reviewPractice != null && "review".equals(requestedScreen)) {
+            JSONArray legal = new JSONArray();
+            if (!reviewPractice.complete) for (int[] move : reviewPractice.position.legal()) legal.put(array(move));
+            position = obj("b", array(reviewPractice.position.b), "moves", legal,
+                    "lastA", reviewPractice.position.lastA, "lastZ", reviewPractice.position.lastZ);
+        }
+        return obj("available", true, "index", reviewIndex, "total", total - 1, "mode", reviewMode, "me", reviewPractice == null ? me : reviewPractice.side,
                 "position", position, "report", presentation.report, "reason", presentation.reason,
                 "playedScore", presentation.playedScore, "bestScore", presentation.bestScore,
+                "playedCompact", presentation.playedCompact, "bestCompact", presentation.bestCompact,
+                "notation", notation, "timeline", timeline, "analyzed", !report.isEmpty(), "verdict", presentation.verdict,
+                "retrying", reviewPractice != null, "retryComplete", reviewPractice != null && reviewPractice.complete,
+                "retryToken", reviewPracticeToken, "yourTurn", reviewPractice != null && !reviewPractice.complete,
+                "retryFeedback", reviewPractice == null ? "" : reviewPractice.feedback,
+                "canRetry", (local || host) && game != null && game.winner >= 0 && best != null && !report.isEmpty(),
+                "scoreSide", presentation.side,
                 "liveGame", game != null && game.winner < 0,
                 "canPrevious", reviewIndex > 1, "canNext", reviewIndex < total - 1,
                 "canBranch", local);
@@ -945,7 +1022,59 @@ public final class KnightlineActivity extends ChessLinkActivity {
             lessons.put(obj("id", index, "name", ChessTutor.NAMES[index], "intro", ChessTutor.INTRO[index],
                     "moves", ChessTutor.lessonMoveCount(index)));
         }
-        return obj("items", lessons);
+        JSONArray puzzles = new JSONArray();
+        android.content.SharedPreferences progress = getSharedPreferences("knightline-puzzles", MODE_PRIVATE);
+        for (int index = 0; index < ChessPuzzles.NAMES.length; index++) {
+            puzzles.put(obj("index", index, "name", ChessPuzzles.NAMES[index], "theme", ChessPuzzles.THEMES[index],
+                    "solved", progress.getBoolean("solved-" + index, false)));
+        }
+        return obj("items", lessons, "puzzles", puzzles);
+    }
+
+    private void startPuzzle(int index) {
+        if (index < 0 || index >= ChessPuzzles.NAMES.length) { reject("Unknown puzzle."); return; }
+        puzzle = new ChessPuzzles(index);
+        puzzleToken = UUID.randomUUID().toString();
+        requestedScreen = "puzzle"; reviewing = false; gameScreen = false; inGame = false;
+        publishState();
+    }
+
+    private void puzzleCommand(String type, JSONObject payload) {
+        if (puzzle == null || !"puzzle".equals(requestedScreen) || !puzzleToken.equals(payload.optString("token"))
+                || payload.optInt("positionSeq", -1) != puzzle.position.seq) {
+            reject("This puzzle position has changed."); publishState(); return;
+        }
+        switch (type) {
+            case "puzzle.retry": startPuzzle(puzzle.index); return;
+            case "puzzle.next": startPuzzle((puzzle.index + 1) % ChessPuzzles.NAMES.length); return;
+            case "puzzle.hint":
+                if (!puzzle.solved) { puzzle.hint = (puzzle.hint + 1) % 4; puzzle.usedHelp = true; }
+                break;
+            case "puzzle.move":
+                if (puzzle.play(payload.optInt("from", -1), payload.optInt("to", -1), payload.optInt("promotion", 5))) {
+                    getSharedPreferences("knightline-puzzles", MODE_PRIVATE).edit().putBoolean("solved-" + puzzle.index, true).apply();
+                }
+                break;
+        }
+        publishState();
+    }
+
+    private JSONObject puzzlePayload() {
+        if (puzzle == null) return obj("available", false);
+        JSONArray moves = new JSONArray();
+        if (!puzzle.solved) for (int[] move : puzzle.position.legal()) moves.put(array(move));
+        JSONObject position = obj("b", array(puzzle.position.b), "moves", moves,
+                "seq", puzzle.position.seq, "lastA", puzzle.position.lastA, "lastZ", puzzle.position.lastZ);
+        int[] solution = puzzle.solution();
+        if (solution != null && puzzle.hint >= 2) {
+            try { position.put("bestFrom", solution[0]); if (puzzle.hint >= 3) position.put("bestTo", solution[1]); }
+            catch (Exception ignored) { }
+        }
+        String copy = puzzle.solved || puzzle.hint == 0 ? puzzle.feedback : ChessPuzzles.IDEAS[puzzle.index];
+        return obj("available", true, "index", puzzle.index, "token", puzzleToken, "name", ChessPuzzles.NAMES[puzzle.index],
+                "theme", ChessPuzzles.THEMES[puzzle.index], "position", position, "me", puzzle.side,
+                "yourTurn", !puzzle.solved, "solved", puzzle.solved, "attempts", puzzle.attempts, "hint", puzzle.hint,
+                "copy", copy, "total", ChessPuzzles.NAMES.length);
     }
 
     private JSONObject transportPayload() {

@@ -30,6 +30,7 @@
   let closingSheetTimer = 0;
   let renderedScreen = '';
   let movePending = false;
+  let showReviewOverview = false;
 
   const clockNames = ['10 | 0', '5 | 0', '3 | 2', '1 | 0', 'Untimed'];
   const strengthNames = ['Easy', 'Medium', 'Hard'];
@@ -92,14 +93,11 @@
   }
 
   function applyFontScale(value) {
-    // Android's large-text preference must make supporting copy easier to read,
-    // without allowing display headings to consume an entire phone viewport.
-    // The layout adds its own reflow tier below, so 150% users get both larger
-    // body copy and wider, stacked content rather than clipped or tiny columns.
+    // One scaling authority: native disables WebView text-only zoom, while CSS
+    // scales both glyphs and their layout units by the actual Android preference.
     const requested = Math.max(85, Math.min(200, Math.round(Number(value) || 100)));
-    const responsive = Math.round(100 + (requested - 100) * 0.28);
     const root = document.documentElement;
-    root.style.setProperty('--system-font-size', responsive + '%');
+    root.style.setProperty('--system-font-size', requested + '%');
     root.dataset.fontScale = String(requested);
     root.dataset.fontScaleTier = requested >= 145 ? 'large' : requested >= 120 ? 'medium' : 'normal';
   }
@@ -139,6 +137,7 @@
     model.lessons = object(payload.lessons, model.lessons);
     model.match = payload.match && payload.match.position ? payload.match : null;
     model.review = object(payload.review, model.review);
+    model.puzzle = object(payload.puzzle, {});
     // Any authoritative state response completes (or rejects) the one pending
     // board command. This prevents rapid taps from queuing a second move against
     // a position that is already changing natively.
@@ -146,6 +145,13 @@
     if (!model.match && (model.screen === 'game' || model.screen === 'review')) model.screen = 'home';
     if (selectedSquare != null && !canSelectFrom(selectedSquare)) selectedSquare = null;
     render();
+    if (model.screen === 'review' && !model.review.liveGame && showReviewOverview) {
+      showReviewOverview = false; openReviewOverview();
+    } else if (overlay && overlay.kind === 'review-overview') {
+      const scroll = sheetScroll.scrollTop;
+      sheetScroll.innerHTML = reviewOverviewMarkup();
+      sheetScroll.scrollTop = scroll;
+    }
   }
 
   function receive(raw) {
@@ -191,6 +197,7 @@
     // state updates for the same destination (clocks, engine analysis, hints) must not
     // steal the player's scroll position.
     const screenChanged = renderedScreen !== model.screen;
+    if (screenChanged) selectedSquare = null;
     app.dataset.screen = model.screen;
     patchHeader();
     patchNavigation();
@@ -199,6 +206,7 @@
     else if (model.screen === 'profile') renderProfile();
     else if (model.screen === 'game') renderGame();
     else if (model.screen === 'review') renderReview();
+    else if (model.screen === 'puzzle') renderPuzzle();
     else renderHome();
     if (screenChanged) main.scrollTop = 0;
     renderedScreen = model.screen;
@@ -211,11 +219,15 @@
       /opening|waiting|connecting|created|join/i.test(String(transport.status || ''));
     const findingNearby = !connected && /scanning|connecting/i.test(String(transport.status || ''));
     const label = connected ? 'Private room' : waitingForRoom ? 'Room opening…' : findingNearby ? 'Finding friend…' : 'Offline ready';
+    if (model.screen === 'puzzle') {
+      header.innerHTML = '<div class="header-brand"><button class="header-back" type="button" data-action="nav-learn" aria-label="Back to Learn">' + icon('back') + '</button><p class="brand-word">Puzzle practice</p></div><span class="header-status">Offline</span>';
+      return;
+    }
     const focused = model.screen === 'game' || model.screen === 'review';
     header.innerHTML = focused
       ? '<div class="header-brand"><button class="header-back" type="button" data-action="' + (model.screen === 'review' ? 'review-back' : 'nav-home') + '" aria-label="Back">' + icon('back') + '</button>' +
-        '<div><p class="header-context">' + (model.screen === 'review' ? 'Analysis' : 'Current game') + '</p><p class="brand-word">' + (model.screen === 'review' ? 'Game review' : escape(model.match && model.match.opponent || 'Knightline')) + '</p></div></div>' +
-        '<div class="header-status header-status--compact"><span class="status-dot ' + (connected ? '' : 'status-dot--idle') + '"></span><span>' + escape(connected ? 'Connected' : 'Saved') + '</span></div>'
+        '<div><p class="brand-word">' + (model.screen === 'review' ? 'Game review' : 'Knightline') + '</p></div></div>' +
+        (model.screen === 'review' ? '<button class="button button--compact" type="button" data-action="review-overview">' + icon('review') + 'Overview</button>' : '<div class="header-status header-status--compact"><span class="status-dot ' + (connected ? '' : 'status-dot--idle') + '"></span><span>' + escape(connected ? 'Connected' : 'Saved') + '</span></div>')
       : '<div class="header-brand"><div class="brand-mark" aria-hidden="true">' + knightIcon() + '</div>' +
         '<p class="brand-word">Knightline</p></div>' +
         '<div class="header-status"><span class="status-dot ' + (connected ? '' : 'status-dot--idle') + '"></span>' +
@@ -318,15 +330,32 @@
 
   function renderLearn() {
     const lessons = array(object(model.lessons, {}).items);
+    const puzzles = array(object(model.lessons, {}).puzzles);
+    const solved = puzzles.filter((p) => p.solved).length;
     main.innerHTML =
-      '<section class="screen"><div><p class="eyebrow">Learn</p><h1 class="title">Build patterns, not guesses.</h1><p class="subtitle">Guided opening lines reveal the idea first, then the piece, then the move.</p></div>' +
-      '<article class="lesson-hero"><p class="eyebrow">Progressive coaching</p><h2 class="surface-title">Hints never change the board.</h2><p class="body-copy">Ask for a concept, reveal the piece, then show the arrow only when you want it.</p></article>' +
+      '<section class="screen"><div><p class="eyebrow">Learn</p><h1 class="title">See the next move.</h1><p class="subtitle">Short, focused practice. No connection needed.</p></div>' +
+      '<article class="surface puzzle-hero"><div class="section-heading"><div><p class="eyebrow">Offline starter pack</p><h2 class="surface-title">The checkmate collection</h2></div><span class="puzzle-progress">' + solved + '<small> / ' + puzzles.length + '</small></span></div><p class="body-copy">Six original positions. Find the finish, learn the pattern.</p><div class="puzzle-pack">' + puzzles.map((p) => '<button class="puzzle-entry" type="button" data-puzzle="' + p.index + '"><span class="puzzle-number">' + (p.solved ? icon('check') : String(p.index + 1).padStart(2, '0')) + '</span><span><strong>' + escape(p.name) + '</strong><small>' + escape(p.theme) + ' · Mate in 1</small></span><span aria-hidden="true">›</span></button>').join('') + '</div><p class="tiny">Progress stays on this phone. Puzzles never replace your saved match.</p></article>' +
+      '<div class="section-heading"><div><p class="eyebrow">Build your repertoire</p><h2 class="surface-title">Guided openings</h2></div></div>' +
       '<section class="lesson-list" aria-label="Opening lessons">' +
       lessons.map((lesson) => '<button class="lesson-card" type="button" data-lesson="' + escape(lesson.id) + '">' +
         '<span class="lesson-icon" aria-hidden="true">✦</span><span class="lesson-content"><span class="lesson-title">' + escape(lesson.name) + '</span>' +
         '<span class="lesson-copy">' + escape(lesson.intro) + '</span></span><span class="progress-ring" data-label="' +
         escape(lesson.moves) + 'm" aria-label="' + escape(lesson.moves) + ' guided moves"></span></button>').join('') +
       '</section></section>';
+  }
+
+  function renderPuzzle() {
+    const p = model.puzzle;
+    if (!p || !p.available) { renderLearn(); return; }
+    const action = ['Hint', 'Show piece', 'Show move', 'Hide hint'][p.hint || 0];
+    main.innerHTML = '<section class="screen puzzle-workspace"><div class="puzzle-title"><p class="eyebrow">' + escape(p.theme) + '</p><h1 class="surface-title">' + escape(p.name) + '</h1></div><div class="puzzle-status"><span class="side-disc side-disc--' + (p.me === 0 ? 'white' : 'black') + '"></span><strong>' + (p.solved ? 'Checkmate!' : p.me === 0 ? 'White to move' : 'Black to move') + '</strong><span>' + (p.index + 1) + ' / ' + p.total + '</span></div><div id="board-host" class="board-stage">' + boardLayout(p.position, p.me, !p.solved, {}, false) + '</div><article class="puzzle-feedback" aria-live="polite"><p class="eyebrow">' + (p.solved ? 'Pattern found' : p.hint ? 'A little direction' : p.attempts ? 'Try again' : 'Your challenge') + '</p><p class="body-copy">' + escape(p.copy) + '</p></article><div class="puzzle-actions"><button class="button" type="button" data-action="puzzle-retry">' + icon('undo') + 'Retry</button><button class="button button--primary" type="button" data-action="' + (p.solved ? 'puzzle-next' : 'puzzle-hint') + '">' + (p.solved ? 'Next puzzle →' : icon('hint') + escape(action)) + '</button></div></section>';
+    attachBoardInteractions();
+  }
+
+  function boardContext() { return model.screen === 'puzzle' ? model.puzzle : model.screen === 'review' ? model.review : model.match; }
+  function puzzleCommand(type, payload) {
+    const p = model.puzzle;
+    if (p) send('puzzle.' + type, Object.assign({token: p.token, positionSeq: p.position.seq}, payload || {}), false);
   }
 
   function renderProfile() {
@@ -378,8 +407,7 @@
     const evaluationEnabled = !!match.evaluationEnabled;
     const material = materialBalance(array(position.b));
     main.innerHTML =
-      '<section class="screen screen--game"><div class="game-topline"><div><p class="eyebrow">' + escape(match.practice || 'Practice') +
-      '</p><p class="game-name">' + escape(match.yourTurn ? 'Your move' : finished ? gameResult(match) : 'Board in play') + '</p></div>' +
+      '<section class="screen screen--game play-workspace"><div class="game-topline"><div><p class="game-name">' + escape(finished ? gameResult(match) : match.yourTurn ? 'Your move' : 'Opponent to move') + '</p><span class="game-integrity">' + escape(match.practice || 'Practice') + '</span></div>' +
       (evaluationEnabled ? '<button class="eval-chip" type="button" data-action="engine-info" aria-label="Stockfish evaluation ' + escape(coach.evaluation || 'not ready') + '. ' + escape(coach.evaluationState || 'Analyzing') + '">' +
       '<span class="eval-label">EVAL</span><span data-evaluation>' + escape(coach.evaluation || '—') + '</span><span class="eval-state">' + escape(coach.evaluationState || 'Analyzing') + '</span></button></div>' +
       '' : '<span class="game-state-pill">' + icon('check') + escape(finished ? 'Complete' : match.yourTurn ? 'Your turn' : 'In play') + '</span></div>') +
@@ -387,7 +415,6 @@
       '<div id="board-host" class="board-stage">' + boardLayout(position, Number(match.me), true, coach, evaluationEnabled) + '</div>' +
       playerCard(match.you || 'You', playerDetail(match.youDetail || 'Your side', material, Number(match.me)), 'ME', clockForYou(match, clock), youActive, false, 'you') +
       coachMarkup(coach, match, finished) +
-      '<p class="turn-note">' + escape(finished ? (match.note || gameResult(match)) : (match.lastMove || match.note || (match.yourTurn ? 'Choose a piece to see legal destinations.' : 'Waiting for the next move.'))) + '</p>' +
       gameActions(match, finished) + '</section>';
     attachBoardInteractions();
   }
@@ -400,14 +427,14 @@
   }
 
   function coachMarkup(coach, match, finished) {
-    if (finished) return '';
-    if (!coach.copy && !coach.heading) return '';
+    if (finished) return '<div class="coach-summary"><div><span class="coach-kicker">Game complete</span><p class="coach-copy">' + escape(match.note || gameResult(match)) + '</p></div></div>';
+    if (!coach.copy && !coach.heading) return '<div class="coach-summary"><div><span class="coach-kicker">Last move</span><p class="coach-copy">' + escape(match.lastMove || 'Select a piece to see its legal moves.') + '</p></div></div>';
     const stage = Math.max(0, Math.min(3, Number(coach.stage) || 0));
     const total = coach.kind === 'lesson' ? 3 : 2;
     const progress = '<span class="coach-progress" aria-label="Hint stage ' + stage + ' of ' + total + '">' +
       Array.from({length: total + 1}, (_, index) => '<i class="' + (index <= stage ? 'is-active' : '') + '"></i>').join('') + '</span>';
-    return '<article class="coach-card"><div class="coach-icon">' + icon('hint') + '</div><div class="coach-body"><div class="coach-heading"><div class="coach-kicker">' + escape(coach.heading || 'Position coach') + '</div>' + progress + '</div>' +
-      '<p class="coach-copy">' + escape(coach.copy || 'Stockfish is preparing a useful thought.') + '</p></div></article>';
+    return '<button class="coach-summary" type="button" data-action="coach-details" aria-label="Read full coaching advice"><div class="coach-body"><div class="coach-heading"><span class="coach-kicker">' + escape(coach.heading || 'Position coach') + '</span>' + progress + '</div>' +
+      '<p class="coach-copy">' + escape(coach.copy || 'Stockfish is preparing a useful thought.') + '</p></div><span class="detail-link">Read ›</span></button>';
   }
 
   function gameActions(match, finished) {
@@ -416,12 +443,11 @@
         '<button class="button" type="button" data-action="review-open">Review</button><button class="button" type="button" data-action="game-menu">More</button></div>';
     }
     const coachState = object(match.coach, {});
-    const coachAction = coachState.available ? coachState.action : '';
+    const coachAction = coachState.action || 'Hint';
     const takeback = !!match.canTakeback;
-    const count = (coachAction ? 1 : 0) + (takeback ? 1 : 0) + 2;
-    return '<div class="game-actions game-actions--' + count + '">' +
-      (coachAction ? '<button class="button button--primary" type="button" data-action="coach" ' + (coachState.loading ? 'disabled aria-busy="true"' : '') + '>' + icon('hint') + escape(coachAction) + '</button>' : '') +
-      (takeback ? '<button class="button" type="button" data-action="takeback">' + icon('undo') + 'Take back</button>' : '') +
+    return '<div class="game-actions game-actions--dock">' +
+      '<button class="button button--primary" type="button" data-action="coach" ' + (!coachState.available || coachState.loading ? 'disabled' : '') + '>' + icon('hint') + '<span>' + escape(coachAction === 'Preparing' ? 'Hint' : coachAction) + '</span></button>' +
+      '<button class="button" type="button" data-action="takeback" ' + (takeback ? '' : 'disabled') + '>' + icon('undo') + '<span>Take back</span></button>' +
       '<button class="button" type="button" data-action="moves">' + icon('moves') + 'Moves</button><button class="button" type="button" data-action="game-menu">' + icon('more') + 'More</button></div>';
   }
 
@@ -429,22 +455,80 @@
     const review = object(model.review, {});
     if (!review.available) { renderGame(); return; }
     const liveGame = !!review.liveGame;
-    const playedScore = liveGame ? '—' : (review.playedScore || '…');
-    const bestScore = liveGame ? '—' : (review.bestScore || '…');
+    const scored = !liveGame && !!review.analyzed;
+    const playedScore = scored ? review.playedCompact : 'Not scored';
+    const bestScore = scored ? review.bestCompact : 'Not scored';
+    const category = reviewCategory(review.verdict);
     main.innerHTML =
-      '<section class="screen screen--game"><div class="review-position-line"><strong>Move ' +
-      escape(Math.ceil(Number(review.index) / 2)) + ' · ' + escape(Number(review.index) % 2 ? 'White' : 'Black') + '</strong><span>Position ' + escape(review.index) + ' of ' + escape(review.total) + '</span></div>' +
-      '<div id="board-host" class="board-stage">' + boardLayout(object(review.position, {}), Number(review.me || 0), false, {}, false) + '</div>' +
-      '<article class="surface review-summary"><div><span class="result-badge">' + (liveGame ? 'Move explorer' : 'Stockfish review') + '</span><p class="body-copy">' +
-      escape(liveGame ? 'Explore the played position now. Full engine review starts when the game ends.' : (review.reason || 'Analysis is preparing.')) +
-      '</p></div><div class="review-scores"><div><span>Played</span><strong>' + escape(playedScore) + '</strong></div><div><span>Best</span><strong>' + escape(bestScore) + '</strong></div></div></article>' +
+      '<section class="screen screen--review review-workspace"><div class="review-position-line"><div><span class="coach-kicker">' + escape(liveGame ? 'Move explorer' : 'Stockfish analysis') + '</span><strong>' + escape(Math.ceil(Number(review.index) / 2)) + (Number(review.index) % 2 ? '. ' : '… ') + escape(review.notation || 'Move') + '</strong></div><span class="review-verdict review-verdict--' + category.key + '">' + escape(scored ? category.label : liveGame ? 'In progress' : 'Analyzing…') + '</span></div>' +
+      '<div id="board-host" class="board-stage">' + boardLayout(object(review.position, {}), Number(review.me || 0), !!review.yourTurn, {}, false) + '</div>' +
+      reviewTimeline(review) +
       '<div class="tab-row" role="tablist" aria-label="Review view">' +
-      reviewTab('Compare', 0, review.mode) + reviewTab('Played', 1, review.mode) + reviewTab('Best move', 2, review.mode) + '</div>' +
-      '<article class="surface"><div class="review-step"><div><p class="eyebrow">Position note</p><p class="tiny">Position ' + escape(review.index) + ' of ' + escape(review.total) + '</p></div></div><p class="body-copy">' + escape(liveGame ? 'Finish the game to unlock scored Stockfish review. You can still compare positions and branch from here.' : (review.report || 'Stockfish analysis appears after it completes.')) +
-       '</p><div class="button-row button-row--review"><button class="button" type="button" data-action="review-prev" ' + (review.canPrevious ? '' : 'disabled') +
-      '>← Previous</button><button class="button" type="button" data-action="review-next" ' + (review.canNext ? '' : 'disabled') + '>Next →</button></div>' +
-       (review.canBranch ? '<button class="button button--quiet button--wide review-branch" type="button" data-action="review-branch">Play from this position</button>' : '') +
-      '</article></section>';
+      reviewTab('Before', 0, review.mode) + reviewTab('Played', 1, review.mode) + (scored ? reviewTab('Best move', 2, review.mode) : '') + '</div>' +
+      '<article class="review-insight review-insight--' + category.key + '"><button class="insight-reading" type="button" data-action="review-details"><div class="insight-heading"><span class="coach-kicker">' + escape(review.retrying ? review.retryComplete ? 'Well found' : 'Your turn · find the best move' : scored ? category.label : 'Position coach') + '</span><span class="detail-link">Details ›</span></div><p class="coach-copy">' + escape(review.retrying ? review.retryFeedback : liveGame ? 'Explore your moves here. Scored analysis is available after the game ends.' : review.reason || 'Stockfish is analyzing the game on your device.') + '</p></button>' +
+      (scored && !review.retrying ? '<div class="review-score-line" aria-label="Scores from ' + escape(review.scoreSide) + '\u2019s perspective"><span>' + escape(review.scoreSide) + ' · played <strong>' + escape(playedScore.replace(' pawns','')) + '</strong></span><span>Best <strong>' + escape(bestScore.replace(' pawns','')) + '</strong></span></div>' : '') +
+      '<div class="review-coach-actions">' + (review.retrying ? '<button class="button button--compact" type="button" data-action="review-cancel-retry">Back to review</button>' : review.canRetry ? '<button class="button button--compact" type="button" data-action="review-retry">' + icon('undo') + 'Retry move</button>' : '<span class="tiny">' + (liveGame ? 'Your game is unchanged' : 'Offline Stockfish') + '</span>') + '<button class="button button--primary button--compact" type="button" data-action="review-key">Next key move →</button></div></article>' +
+      '<div class="review-navigation"><button class="button" type="button" data-action="review-prev" aria-label="Previous move" ' + (review.canPrevious ? '' : 'disabled') + '>←</button><button class="button review-counter" type="button" data-action="review-list">' + escape(review.index) + ' <span>/ ' + escape(review.total) + ' moves</span></button><button class="button" type="button" data-action="review-next" aria-label="Next move" ' + (review.canNext ? '' : 'disabled') + '>→</button></div></section>';
+    attachBoardInteractions();
+    const current = main.querySelector('.review-ribbon [aria-current="step"]');
+    if (current) current.parentElement.scrollLeft = current.offsetLeft - current.parentElement.offsetLeft - current.parentElement.clientWidth / 2 + current.clientWidth / 2;
+  }
+
+  function reviewCategory(verdict) {
+    if (/blunder/i.test(verdict)) return {key:'blunder',label:'Blunder',mark:'??'};
+    if (/mistake/i.test(verdict)) return {key:'mistake',label:'Mistake',mark:'?'};
+    if (/inaccuracy/i.test(verdict)) return {key:'inaccuracy',label:'Inaccuracy',mark:'?!'};
+    if (/best/i.test(verdict)) return {key:'best',label:'Best move',mark:'★'};
+    if (/good/i.test(verdict)) return {key:'good',label:'Good move',mark:'✓'};
+    return {key:'pending',label:'Not analyzed yet',mark:'…'};
+  }
+
+  function keyMoves() { return array(model.review.timeline).filter(m => /mistake|blunder|inaccuracy/i.test(m.verdict)); }
+  function nextKeyMove() {
+    const keys = keyMoves();
+    if (!keys.length) { openReviewOverview(); return; }
+    const target = keys.find(m => m.index > model.review.index) || keys[0];
+    send('review.jump', {index: target.index});
+  }
+  function openReviewOverview() {
+    overlay = {kind:'review-overview'}; openSheet('review-overview');
+    sheetScroll.innerHTML = reviewOverviewMarkup();
+  }
+  function reviewOverviewMarkup() {
+    const r = model.review, moves = array(r.timeline), keys = keyMoves();
+    const counts = {};
+    ['best','good','inaccuracy','mistake','blunder'].forEach(k => counts[k] = [0,0]);
+    moves.forEach(m => {const category = reviewCategory(m.verdict).key;if(counts[category])counts[category][(m.index-1)%2]++;});
+    const analyzed = moves.filter(m => !!m.verdict).length;
+    const complete = analyzed === moves.length && !r.liveGame;
+    return '<div class="sheet-heading"><div><p class="eyebrow">Your game, understood</p><h2 id="sheet-title" class="sheet-title">Review highlights</h2></div><button class="icon-button" type="button" data-sheet-close aria-label="Close">' + icon('close') + '</button></div>' +
+      '<div class="review-overview-status"><span class="result-badge">' + (r.liveGame ? 'Game in progress' : complete ? 'Analysis ready' : 'Analyzing on device') + '</span><span class="tiny">' + analyzed + ' / ' + moves.length + ' moves</span></div>' +
+      '<p class="body-copy overview-lead">' + (r.liveGame ? 'Browse the moves now. Finish the game for scored feedback.' : keys.length ? keys.length + ' moment' + (keys.length === 1 ? '' : 's') + ' to learn from. Revisit the turning points and try a better move.' : complete ? 'No inaccuracies found in this search. Walk through the game to see Stockfish’s recommendations.' : 'Stockfish is comparing your moves with its best alternatives.') + '</p>' +
+      '<div class="overview-graph">' + reviewTimeline(r) + '</div>' +
+      '<div class="classification-table"><div class="classification-row classification-heading"><span>Move quality</span><span>White</span><span>Black</span></div>' + Object.keys(counts).map(k=>{const c=reviewCategory(k);return '<div class="classification-row"><span><i class="move-mark move-mark--' + k + '">' + c.mark + '</i>' + c.label + '</span><strong>' + counts[k][0] + '</strong><strong>' + counts[k][1] + '</strong></div>';}).join('') + '</div>' +
+      '<p class="tiny">Engine classifications, not a global accuracy rating. Offline, time-limited analysis may change with a deeper search.</p>' +
+      '<div class="overview-key-list">' + keys.map(m=>'<button class="choice choice-row" type="button" data-review-jump="' + m.index + '"><span class="move-mark move-mark--' + reviewCategory(m.verdict).key + '">' + reviewCategory(m.verdict).mark + '</span><span><strong>' + Math.ceil(m.index/2) + (m.index%2?'. ':'… ') + escape(m.notation) + '</strong><small>' + escape(m.verdict) + '</small></span><span>›</span></button>').join('') + '</div>' +
+      '<div class="sheet-footer"><button class="button button--primary button--wide" type="button" data-action="review-start-guided">' + (keys.length ? 'Review key moments' : 'Walk through the game') + ' →</button></div>';
+  }
+
+  function reviewTimeline(review) {
+    const moves = array(review.timeline);
+    const hasScore = (m) => m.whiteScore != null || m.whiteMate != null;
+    const values = moves.filter(hasScore);
+    const chart = values.length > 1 && !review.liveGame ? '<svg class="analysis-chart" viewBox="0 0 100 32" preserveAspectRatio="none" role="img" aria-label="Evaluation through the game. Above the line favors White; forced mates are at the chart edges."><path class="analysis-zero" d="M0 16H100"/>' + moves.map((m, i) => {
+      if (!hasScore(m) || i === 0 || !hasScore(moves[i - 1])) return '';
+      const y = (entry) => 16 - (entry.whiteMate != null ? Math.sign(entry.whiteMate) : Math.tanh(Number(entry.whiteScore) / 4)) * 14;
+      const x1 = (i - 1) / Math.max(1, moves.length - 1) * 100, x2 = i / Math.max(1, moves.length - 1) * 100;
+      const segment = 'M' + x1 + ' ' + y(moves[i-1]) + 'L' + x2 + ' ' + y(m);
+      return '<path class="analysis-area" d="' + segment + 'L' + x2 + ' 16L' + x1 + ' 16Z"/><path class="analysis-line" d="' + segment + '"/>';
+    }).join('') + '<path class="analysis-cursor" d="M' + ((Number(review.index) - 1) / Math.max(1, moves.length - 1) * 100) + ' 0v32"/></svg>' : '<div class="analysis-caption">' + (review.liveGame ? 'Your game, move by move' : 'Evaluation appears as Stockfish analyzes') + '</div>';
+    return '<div class="review-timeline">' + chart + '<div class="review-ribbon" aria-label="Jump to move">' + moves.map((m) => '<button type="button" data-review-jump="' + m.index + '" aria-current="' + (m.index === review.index ? 'step' : 'false') + '"><span>' + Math.ceil(m.index / 2) + (m.index % 2 ? '.' : '…') + '</span> ' + escape(m.notation) + '</button>').join('') + '</div></div>';
+  }
+
+  function openReading(title, copy, extra) {
+    overlay = {kind: 'reading'};
+    openSheet('reading');
+    sheetScroll.innerHTML = '<div class="sheet-heading"><h2 id="sheet-title" class="sheet-title">' + escape(title) + '</h2><button class="icon-button" type="button" data-sheet-close aria-label="Close">' + icon('close') + '</button></div><p class="body-copy reading-copy">' + escape(copy) + '</p>' + (extra || '');
   }
 
   function reviewTab(label, mode, current) {
@@ -471,7 +555,7 @@
       const selectedClass = selected === square ? ' square--selected' : '';
       const legalClass = legalTarget ? (hasPiece ? ' square--capture' : ' square--legal') : '';
       const lastClass = square === Number(position.lastA) || square === Number(position.lastZ) ? ' square--last' : '';
-      const coachClass = square === coachFrom ? ' square--coach-source' : square === coachTo ? ' square--coach-target' : '';
+      const coachClass = square === coachFrom && coachTo < 0 ? ' square--coach-source' : '';
       const label = squareLabel(square, piece, legalTarget, selected === square);
       // Labels belong to the displayed orientation, not to the pre-rotation
       // logical square.  That is what keeps the black side's ranks/files true.
@@ -561,38 +645,27 @@
   }
 
   function arrowMarkup(position, me) {
-    const from = position.bestFrom != null && Number(position.bestFrom) >= 0 ? Number(position.bestFrom) :
-      (position.playedFrom != null && Number(position.playedFrom) >= 0 ? Number(position.playedFrom) : -1);
-    const to = position.bestTo != null && Number(position.bestTo) >= 0 ? Number(position.bestTo) :
-      (position.playedTo != null && Number(position.playedTo) >= 0 ? Number(position.playedTo) : -1);
-    if (from < 0 || to < 0) return '<svg class="board-overlay" viewBox="0 0 100 100" aria-hidden="true"></svg>';
-    const a = visualPoint(from, me);
-    const b = visualPoint(to, me);
-    const dx = b.x - a.x;
-    const dy = b.y - a.y;
-    const length = Math.max(1, Math.sqrt(dx * dx + dy * dy));
-    const ux = dx / length;
-    const uy = dy / length;
-    // Coach guidance should frame a move, never conceal the source piece.
-    // Stop it short of both piece centres and keep the head proportional to a
-    // single square on compact phones.
-    // A one-square move has no free corridor between two full-size pieces.
-    // Its source/target rings are clearer than an arrow drawn across artwork.
-    if (length <= 12.6) return '<svg class="board-overlay" viewBox="0 0 100 100" aria-hidden="true"></svg>';
-    const sourceClearance = Math.min(7.4, Math.max(6.25, length * .42));
-    const targetClearance = Math.min(7.4, Math.max(6.25, length * .42));
-    const headBase = Math.min(targetClearance + 3.2, Math.max(targetClearance + 2.1, length * .31));
-    const startX = a.x + ux * sourceClearance;
-    const startY = a.y + uy * sourceClearance;
-    const tipX = b.x - ux * targetClearance;
-    const tipY = b.y - uy * targetClearance;
-    const x2 = b.x - ux * headBase;
-    const y2 = b.y - uy * headBase;
-    const leftX = b.x - ux * headBase - uy * 2.5;
-    const leftY = b.y - uy * headBase + ux * 2.5;
-    const rightX = b.x - ux * headBase + uy * 2.5;
-    const rightY = b.y - uy * headBase - ux * 2.5;
-    return '<svg class="board-overlay" viewBox="0 0 100 100" aria-hidden="true"><line class="coach-arrow" x1="' + startX + '" y1="' + startY + '" x2="' + x2 + '" y2="' + y2 + '"></line><path class="coach-arrow-head" d="M' + tipX + ' ' + tipY + ' L' + leftX + ' ' + leftY + ' L' + rightX + ' ' + rightY + ' Z"></path></svg>';
+    const arrows = [];
+    const best = [Number(position.bestFrom ?? -1), Number(position.bestTo ?? -1)];
+    const played = [Number(position.playedFrom ?? -1), Number(position.playedTo ?? -1)];
+    if (played[0] >= 0 && played[1] >= 0 && (played[0] !== best[0] || played[1] !== best[1])) arrows.push(chessArrow(played[0], played[1], me, 'played'));
+    if (best[0] >= 0 && best[1] >= 0) arrows.push(chessArrow(best[0], best[1], me, 'best'));
+    return '<svg class="board-overlay" viewBox="0 0 100 100" aria-hidden="true">' + arrows.join('') + '</svg>';
+  }
+
+  function chessArrow(from, to, me, kind) {
+    const a = visualPoint(from, me), b = visualPoint(to, me);
+    const dx = b.x - a.x, dy = b.y - a.y;
+    const knight = (Math.abs(dx) === 25 && Math.abs(dy) === 12.5) || (Math.abs(dx) === 12.5 && Math.abs(dy) === 25);
+    const bend = knight ? Math.abs(dx) > Math.abs(dy) ? {x:b.x,y:a.y} : {x:a.x,y:b.y} : a;
+    const length = Math.hypot(b.x-bend.x,b.y-bend.y);
+    if (!length) return '';
+    const ux = (b.x-bend.x)/length, uy = (b.y-bend.y)/length;
+    const end = {x:b.x-ux*4.3,y:b.y-uy*4.3};
+    const path = 'M' + a.x + ' ' + a.y + (knight ? 'L' + bend.x + ' ' + bend.y : '') + 'L' + end.x + ' ' + end.y;
+    const head = 'M' + b.x + ' ' + b.y + 'L' + (end.x-uy*3.7) + ' ' + (end.y+ux*3.7) + 'L' + (end.x+uy*3.7) + ' ' + (end.y-ux*3.7) + 'Z';
+    // One translucent group avoids a dark seam where shaft and head meet.
+    return '<g class="chess-arrow chess-arrow--' + kind + '"><path class="chess-arrow-shaft" d="' + path + '"/><path class="chess-arrow-head" d="' + head + '"/></g>';
   }
 
   function visualPoint(square, me) {
@@ -634,12 +707,13 @@
   }
 
   function canSelectFrom(square) {
-    const position = model.match && object(model.match.position, {});
+    const context = boardContext();
+    const position = context && object(context.position, {});
     return position && array(position.moves).some((move) => Number(move[0]) === square);
   }
 
   function selectSquare(square) {
-    if (movePending || !model.match || !model.match.yourTurn) return;
+    if (movePending || !boardContext() || !boardContext().yourTurn) return;
     if (selectedSquare == null) {
       if (canSelectFrom(square)) {
         selectedSquare = square;
@@ -660,23 +734,31 @@
   }
 
   function tryMove(from, to) {
-    if (movePending || !model.match || !model.match.yourTurn) return false;
-    const position = object(model.match && model.match.position, {});
+    if (movePending || !boardContext() || !boardContext().yourTurn) return false;
+    const position = object(boardContext().position, {});
     const valid = array(position.moves).some((move) => Number(move[0]) === from && Number(move[1]) === to);
     if (!valid) return false;
+    if (model.screen === 'review' && Math.abs(Number(position.b[from])) === 1 && (to < 8 || to >= 56)) {
+      selectedSquare = null;
+      overlay = {kind:'retry-promotion',from,to}; openSheet('promotion');
+      sheetScroll.innerHTML = '<div class="sheet-heading"><h2 id="sheet-title" class="sheet-title">Choose your promotion</h2><button class="icon-button" type="button" data-sheet-close aria-label="Cancel">' + icon('close') + '</button></div><div class="choice-grid choice-grid--two">' + [[5,'Queen'],[4,'Rook'],[3,'Bishop'],[2,'Knight']].map(([piece,name])=>'<button class="choice" type="button" data-retry-promotion="'+piece+'">'+name+'</button>').join('') + '</div>';
+      refreshBoardOnly(); return true;
+    }
     selectedSquare = null;
     movePending = true;
-    send('match.move', {from: from, to: to});
+    if (model.screen === 'puzzle') puzzleCommand('move', {from, to});
+    else if (model.screen === 'review') send('review.try', {from, to, index:model.review.index, token:model.review.retryToken});
+    else send('match.move', {from: from, to: to});
     refreshBoardOnly();
     return true;
   }
 
   function refreshBoardOnly() {
     const host = document.getElementById('board-host');
-    if (!host || !model.match) return;
+    if (!host || !boardContext()) return;
     const shell = host.querySelector('.board-shell');
     if (!shell) return;
-    const position = object(model.match.position, {});
+    const position = object(boardContext().position, {});
     const pieces = array(position.b);
     const targets = new Set(selectedSquare == null ? [] : array(position.moves)
       .filter((move) => Number(move[0]) === selectedSquare)
@@ -719,6 +801,7 @@
 
   function gameResult(match) {
     if (Number(match.winner) === 2) return 'Draw';
+    if (match.local && !match.solo) return Number(match.winner) === 0 ? 'White wins' : 'Black wins';
     return Number(match.winner) === Number(match.me) ? 'You won' : 'You lost';
   }
 
@@ -736,7 +819,7 @@
     const bot = overlay.mode === 'bot';
     const remote = overlay.mode === 'remote';
     const remoteHosting = !!object(model.transport, {}).hosting;
-    const primaryLabel = bot ? 'Play ' : remote ? (remoteHosting ? 'Invite · ' : 'Suggest · ') : 'Start ';
+    const primaryLabel = bot ? 'Play' : remote ? (remoteHosting ? 'Send invite' : 'Suggest game') : 'Start game';
     return '<div class="sheet-heading"><div><p class="eyebrow">' + (bot ? 'Offline bot' : remote ? 'Private room' : 'One device') + '</p><h2 id="sheet-title" class="sheet-title">' +
       (bot ? 'Set up your game' : remote ? (remoteHosting ? 'Invite a friend' : 'Suggest a game') : 'Pass & play') + '</h2><p class="sheet-subtitle">' +
       (bot ? 'Choose a time and opponent. Hints make this a Practice game.' : remote ? 'Choose a clock. This sheet stays put while you decide.' : 'Hand the phone over after every move.') + '</p></div><button class="icon-button" type="button" data-sheet-close aria-label="Close">' + icon('close') + '</button></div>' +
@@ -746,7 +829,7 @@
         strengthNames.map((name, index) => choiceButton('level', index, name, index === 0 ? 'Estimated 600' : index === 1 ? 'Estimated 1200' : 'Estimated 1800', overlay.level === index)).join('') +
         '</div></section>' : '') +
       '<div class="sheet-footer"><button class="button button--quiet" type="button" data-sheet-close>Cancel</button><button class="button button--primary" type="button" data-setup-start>' +
-      primaryLabel + escape(clockNames[overlay.clock]) + '</button></div>';
+      primaryLabel + '</button></div>';
   }
 
   function choiceButton(group, value, mainLabel, detail, active) {
@@ -760,12 +843,8 @@
     sheetScroll.querySelectorAll('[data-choice="' + group + '"]').forEach((button) => {
       button.setAttribute('aria-pressed', String(Number(button.dataset.value) === overlay[group]));
     });
-    const start = sheetScroll.querySelector('[data-setup-start]');
-    if (start) {
-      const prefix = overlay.mode === 'bot' ? 'Play ' : overlay.mode === 'remote'
-        ? (object(model.transport, {}).hosting ? 'Invite · ' : 'Suggest · ') : 'Start ';
-      start.textContent = prefix + clockNames[overlay.clock];
-    }
+    // The selected chip communicates the clock. A stable action label avoids
+    // resizing the footer (and the whole sheet) when "Untimed" is selected.
   }
 
   function openTransportMenu() {
@@ -943,16 +1022,25 @@
       else if (value === 'remote-setup') openSetup('remote');
       else if (value === 'resume') send('match.resume');
       else if (value === 'coach') send('coach.advance');
+      else if (value === 'coach-details') openReading(model.match.coach.heading || 'Position coach', model.match.coach.copy);
       else if (value === 'takeback') send('match.takeback');
       else if (value === 'moves') send('match.openMoves');
       else if (value === 'game-menu') send('match.openMenu');
       else if (value === 'rematch') send('match.rematch');
-      else if (value === 'review-open') send('review.open');
+      else if (value === 'review-open') { showReviewOverview = true; send('review.open'); }
       else if (value === 'review-back') send('nav.back', {}, false);
       else if (value === 'review-prev') send('review.previous');
       else if (value === 'review-next') send('review.next');
-      else if (value === 'review-branch') send('review.branch');
+      else if (value === 'review-overview') openReviewOverview();
+      else if (value === 'review-key') nextKeyMove();
+      else if (value === 'review-retry') send('review.retry');
+      else if (value === 'review-cancel-retry') send('review.cancelRetry');
+      else if (value === 'review-start-guided') { closeOverlay(); send('review.jump', {index:keyMoves()[0]?.index || 1}); }
+      else if (value === 'review-branch') { closeOverlay(); send('review.branch'); }
+      else if (value === 'review-details') openReading(model.review.verdict || 'Position details', model.review.liveGame ? 'Finish the game to unlock scored Stockfish analysis. You can explore every played move without changing your saved game.' : model.review.report || 'Stockfish is analyzing this move.', model.review.canBranch ? '<button class="button button--wide review-branch" type="button" data-action="review-branch">Practice from here</button>' : '');
+      else if (value === 'review-list') openReading('Move navigator', 'Choose any move to inspect it.', '<div class="move-navigator">' + array(model.review.timeline).map((m) => '<button class="choice" type="button" data-review-jump="' + m.index + '"><strong>' + Math.ceil(m.index / 2) + (m.index % 2 ? '. ' : '… ') + escape(m.notation) + '</strong><span class="tiny">' + escape(m.verdict || 'Unscored') + '</span></button>').join('') + '</div>');
       else if (value === 'engine-info') send('engine.info', {}, false);
+      else if (value.startsWith('puzzle-')) puzzleCommand(value.substring(7));
       return;
     }
 
@@ -961,16 +1049,27 @@
       go(navButton.dataset.nav);
       return;
     }
+    const retryPromotion = event.target.closest('[data-retry-promotion]');
+    if (retryPromotion && overlay?.kind === 'retry-promotion') {
+      const {from,to} = overlay;
+      closeOverlay(); movePending = true;
+      send('review.try', {from,to,promotion:Number(retryPromotion.dataset.retryPromotion),index:model.review.index,token:model.review.retryToken});
+      refreshBoardOnly(); return;
+    }
     const lesson = event.target.closest('[data-lesson]');
     if (lesson) {
       send('learn.start', {lesson: Number(lesson.dataset.lesson)});
       return;
     }
+    const puzzle = event.target.closest('[data-puzzle]');
+    if (puzzle) { send('puzzle.start', {index: Number(puzzle.dataset.puzzle)}, false); return; }
     const mode = event.target.closest('[data-review-mode]');
     if (mode) {
       send('review.mode', {mode: Number(mode.dataset.reviewMode)});
       return;
     }
+    const jump = event.target.closest('[data-review-jump]');
+    if (jump) { if (overlay) closeOverlay(); send('review.jump', {index: Number(jump.dataset.reviewJump)}); return; }
     const choice = event.target.closest('[data-choice]');
     if (choice) {
       updateSetupChoice(choice.dataset.choice, choice.dataset.value);
