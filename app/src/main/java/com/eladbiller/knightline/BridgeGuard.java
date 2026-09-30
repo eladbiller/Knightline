@@ -18,14 +18,15 @@ public final class BridgeGuard {
 
     private static final Set<String> KNOWN_TYPES = Collections.unmodifiableSet(new HashSet<>(Arrays.asList(
             "ui.ready", "ui.closeOverlay",
-            "nav.home", "nav.play", "nav.learn", "nav.profile", "nav.back",
+            "nav.home", "nav.play", "nav.learn", "nav.profile", "nav.history", "nav.back",
+            "archive.open", "settings.feedback", "settings.preview",
             "confirm.accept", "confirm.cancel",
             "match.startBot", "match.startPass", "match.resume", "match.move",
             "match.takeback", "match.resign", "match.rematch", "match.retryBot",
             "match.openMoves", "match.openMenu", "match.clear", "match.inviteRemote", "match.suggestRemote",
             "learn.start", "promotion.choose", "coach.advance",
-            "puzzle.start", "puzzle.move", "puzzle.hint", "puzzle.retry", "puzzle.next",
-            "review.open", "review.previous", "review.next", "review.mode", "review.branch", "review.jump",
+            "puzzle.start", "puzzle.move", "puzzle.hint", "puzzle.retry", "puzzle.next", "puzzle.undo",
+            "review.open", "review.previous", "review.next", "review.jump",
             "review.try", "review.best", "review.undo", "review.reset", "review.evaluate",
             "transport.host", "transport.join", "transport.scan", "transport.connect",
             "transport.disconnect", "transport.settings",

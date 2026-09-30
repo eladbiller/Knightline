@@ -8,9 +8,11 @@ The interface is packaged inside the APK and served through Android's `WebViewAs
 
 - Complete native chess rules: legal move validation, castling, en passant, promotion, checkmate, stalemate, threefold repetition, and the 50-move rule.
 - Bundled Stockfish 16 NNUE for arm64-v8a, armeabi-v7a, and x86_64; Easy, Medium, and Hard bot levels; live numeric evaluation; and post-game review.
-- Offline bot games, pass-and-play, saved/resumed games, clocks, promotion, takebacks, and review branching.
-- Board-first game and review workspaces: essential controls fit the viewport. Review shows the played move in its grade color; Show best is optional. Explore any legal continuation for both sides, with live Stockfish scores, Undo, fixed orientation, player-labeled highlights and filters. The saved match stays unchanged.
-- 256 offline puzzles: six original warm-ups and 250 multi-move Lichess CC0 positions across five difficulty bands, from 800–1199 through 2400+. Progressive hints, native opponent replies, promotion, missed-puzzle practice, and separate unassisted/assisted progress. Puzzle practice never replaces the saved match.
+- Offline bot games, pass-and-play, saved/resumed games, clocks, promotion, takebacks, and independent review analysis.
+- Review starts **before** the selected move. Its graded arrow sits behind pieces; Show best is optional. Explore any legal continuation for both sides with live Stockfish scores, Undo and Reset line. Orientation stays fixed. Key moments appear before the collapsible statistics.
+- A review-only library automatically keeps the latest 100 played games, separate from the active save. Finished games open Review last game and return Home. Archived analysis cannot replace a match or change its rating.
+- 256 offline puzzles in ascending difficulty: six original warm-ups and 250 multi-move Lichess CC0 positions, from 800–1199 through 2400+. Legal mistakes are played on the board, with an explicit Undo. Hints and mistakes permanently mark that puzzle as practice—even after retries or restarts. Earlier-version completions are preserved as practice because their first-attempt history cannot be verified. Puzzle practice never replaces the saved match.
+- Original short game sounds and gentle native haptics, with independent saved switches and Test feedback in Profile. User-selected modern-knight logo, including an adaptive Android launcher icon.
 - Progressive coaching for bot play and guided lessons: concept, piece, move arrow, then Hide hint. Hint use clearly changes a game to Practice.
 - Native-stored Private Skill Rating: starts at 800; K=32 for the first 20 rated games then K=20; local history/deltas; bot anchors 600/1200/1800. It never claims a global ranking or leaderboard.
 - Knightline-only Bluetooth rooms and private PeerJS/WebRTC rooms, with native move validation and local chat.
@@ -40,7 +42,7 @@ Keep release-signing files outside the repository; `.gitignore` excludes keystor
 
 ## Validation status
 
-See [v0.4 flow validation](docs/validation-v0.4.0.md) for the current changes and limits. The native CLI suites pass 41,016 checks in total, including legal replay of every packaged puzzle, free review analysis, bridge and rating checks. Another 75 JavaScript assertions cover evaluation-rail orientation and White-perspective scores. These are real test runs, not an empty Gradle/JUnit result.
+See [v0.5 flow validation](docs/validation-v0.5.0.md) for the current changes and limits. The native CLI suites pass 41,839 checks in total, including legal replay of every packaged puzzle, visible mistakes/Undo, permanent assistance, archive retention/isolation, bridge and rating checks. Another 75 JavaScript assertions cover evaluation-rail orientation and White-perspective scores. These are real test runs, not an empty Gradle/JUnit result.
 
 Prior beta Pixel coverage includes:
 

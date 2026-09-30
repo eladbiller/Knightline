@@ -67,9 +67,34 @@ async function layout(label) {
   assert.equal(d.squareCount,64);
   assert(d.maxSquareError<1,`${label}: cells not square`);
   assert(d.buttons.every(b=>b.r.y>=0&&b.r.bottom<=d.viewport[1]+1),`${label}: action below viewport`);
+  const header=await evaluate(`(()=>{const e=document.querySelector('[data-action="review-overview"]');if(!e)return null;const range=document.createRange();range.selectNodeContents(e);return {height:range.getBoundingClientRect().height,line:parseFloat(getComputedStyle(e).lineHeight),right:e.getBoundingClientRect().right,viewport:innerWidth}})()`);
+  if(header){assert(header.height<=header.line+2,`${label}: header label wrapped`);assert(header.right<=header.viewport,`${label}: header overflow`);}
   const overflow=await evaluate(`(()=>{const parent=document.querySelector('.insight-reading');if(!parent)return 0;const copy=parent.querySelector('.coach-copy');return copy.getBoundingClientRect().bottom-parent.getBoundingClientRect().bottom})()`);
   assert(overflow<2, `${label}: coach text overlaps score/actions by ${overflow}px`);
   console.log(JSON.stringify({label,scroll:d.scroll,viewport:d.viewport,board:Math.round(d.board.width),squareError:d.maxSquareError,actionsVisible:true}));
+}
+async function beginFrameAudit() {
+  await evaluate(`(()=>{
+    window.__flowAudit={frames:0,errors:[],last:null,running:true};
+    function frame(){const a=window.__flowAudit;if(!a.running)return;const board=document.querySelector('.board');
+      if(board){a.frames++;const r=board.getBoundingClientRect(),cells=[...board.querySelectorAll('.square')];
+        if(Math.abs(r.width-r.height)>1||cells.length!==64||cells.some(e=>{const c=e.getBoundingClientRect();return Math.abs(c.width-c.height)>1}))a.errors.push('Unequal board cells');
+        const scale=visualViewport?.scale||1;if(scale!==1)a.errors.push('Viewport zoom '+scale);
+        const screen=document.querySelector('#app').dataset.screen;
+        const key=screen+':'+innerWidth+':'+innerHeight+':'+(document.querySelector('.review-workspace')?.dataset.positionKey||'');
+        if(a.last?.key===key&&screen==='review'&&Math.abs(a.last.width-r.width)>1)a.errors.push('Unchanged review position resized');
+        a.last={key,width:r.width};
+        for(const e of document.querySelectorAll('.review-tools button,.review-navigation button,.puzzle-actions button,.puzzle-status strong,.review-verdict,.player-name,.player-meta')){
+          const box=e.getBoundingClientRect();if(!box.width||!box.height)continue;const range=document.createRange();range.selectNodeContents(e);const text=range.getBoundingClientRect();
+          if(text.height>0&&text.bottom>box.bottom+2)a.errors.push('Text below control: '+e.textContent);
+        }
+      }requestAnimationFrame(frame);
+    }requestAnimationFrame(frame);
+  })()`);
+}
+async function endFrameAudit(){
+  const result=await evaluate(`(()=>{const a=window.__flowAudit;if(!a)return null;a.running=false;return {frames:a.frames,errors:[...new Set(a.errors)]}})()`);
+  if(result){console.log('Continuous frame audit: '+JSON.stringify(result));assert.deepEqual(result.errors,[],'Flow geometry/text regression');}
 }
 async function home() {
   if(await evaluate(`document.querySelector('#bottom-sheet').dataset.open==='true'`)){adb('shell','input','keyevent','4');await delay(400);}
@@ -104,24 +129,31 @@ async function railOrientation(blackAtBottom) {
 }
 async function reviewFlow() {
   await home();await touch('[data-nav="play"]');await touch('[data-action="setup-pass"]',true);await delay(350);
+  // Wait for the opening transition itself, not a wall-clock guess: a busy
+  // emulator can deliver the first rendered animation frame after that delay.
+  // Settings must stay fixed once open; do not count the intentional slide-up.
+  await wait(`(()=>{const e=document.querySelector('#bottom-sheet');return e.dataset.open==='true' && !e.getAnimations().some(a=>a.playState==='running') && Math.abs(new DOMMatrixReadOnly(getComputedStyle(e).transform).m42)<.1})()`,'setup opening transition');
   await evaluate(`window.__sheetSamples=[];window.__watchSheet=true;(function f(){if(!window.__watchSheet)return;const r=document.querySelector('#bottom-sheet').getBoundingClientRect();window.__sheetSamples.push([r.x,r.y,r.width,r.height]);requestAnimationFrame(f)})()`);
   for(const clock of [1,2,3,0,4])await touch(`[data-choice="clock"][data-value="${clock}"]`,true);
   const samples=await evaluate(`window.__watchSheet=false;window.__sheetSamples`);
   for(const s of samples)for(let n=0;n<4;n++)assert(Math.abs(s[n]-samples[0][n])<1,'Setup sheet shifted');
   await touch('[data-setup-start]',true);
+  await wait(`document.querySelector('#app').dataset.screen==='game' || !!document.querySelector('[data-confirm="accept"]')`,'start or replacement confirmation');
   if(await evaluate(`!!document.querySelector('[data-confirm="accept"]')`))await touch('[data-confirm="accept"]',true);
   await wait(`document.querySelector('#app').dataset.screen==='game'`,'test game');
   await move(53,45);
   await touch('[data-action="moves"]');await touch('[data-native-action="review.open"]',true);
   await wait(`document.querySelector('#app').dataset.screen==='review'`,'Black-oriented live review');
-  await evaluated();await railOrientation(true);await screenshot('knightline-v04-black-review');
+  await evaluated();await railOrientation(false);await screenshot('knightline-v05-live-review');
   await touch('[data-action="review-back"]');await wait(`document.querySelector('#app').dataset.screen==='game'`,'resume original game');
   await move(12,28);await move(54,38);await move(3,39);
   await wait(`!!document.querySelector('[data-action="review-open"]')`,'mate');
   await touch('[data-action="review-open"]');
   await wait(`document.querySelector('#bottom-sheet').dataset.sheetKind==='review-overview'`,'overview');
   await wait(`document.querySelector('.review-overview-status').innerText.includes('4 / 4')`,'full saved analysis',60000);
-  assert(await evaluate(`document.querySelector('.review-player-key').innerText.includes('White') && document.querySelector('.review-player-key').innerText.includes('Black')`),'Player key missing');
+  assert(await evaluate(`document.querySelector('[data-action="review-start-guided"]').getBoundingClientRect().bottom < innerHeight`),'Key moments CTA below fold');
+  assert(await evaluate(`document.querySelector('.overview-key-list').compareDocumentPosition(document.querySelector('.overview-statistics')) & Node.DOCUMENT_POSITION_FOLLOWING`),'Key moments after move statistics');
+  assert(await evaluate(`document.querySelector('.review-player-key').textContent.includes('White') && document.querySelector('.review-player-key').textContent.includes('Black')`),'Player key missing');
   assert(await evaluate(`[...document.querySelectorAll('.highlight-player')].every(e=>/White|Black/.test(e.innerText))`),'Highlight owner missing');
   await touch('[data-review-filter="black"]',true);
   assert(await evaluate(`[...document.querySelectorAll('.highlight-player')].every(e=>e.innerText.includes('Black'))`),'Black filter leaks White');
@@ -130,7 +162,11 @@ async function reviewFlow() {
   await screenshot('knightline-v04-highlights');
   await touch('[data-review-filter="both"]',true);await touch('[data-action="review-start-guided"]',true);
   await touch('.review-ribbon [data-review-jump="4"]');await wait(`document.querySelector('.review-verdict').innerText==='Best move'`,'Best title');
-  await noBest('review entry');assert.equal(await evaluated(),'−M0','White-perspective terminal score');
+  await noBest('review entry');assert.match(await evaluated(),/−M[1-9]/,'Pre-move mate score');
+  assert(await evaluate(`document.querySelector('[data-square="3"]').getAttribute('aria-label').includes('queen')`),'Played queen not at origin before move');
+  assert.equal(await evaluate(`document.querySelectorAll('[data-review-mode]').length`),0,'Before/after toggle still present');
+  assert(await evaluate(`+getComputedStyle(document.querySelector('.piece-svg')).zIndex > +getComputedStyle(document.querySelector('.board-overlay')).zIndex`),'Arrow paints over piece');
+  assert(await evaluate(`(()=>{const p=document.querySelector('[data-square="3"] .piece-svg'),a=document.querySelector('.board-overlay'),r=p.getBoundingClientRect();const pp=p.style.pointerEvents,ap=a.style.pointerEvents;try{p.style.pointerEvents='all';a.style.pointerEvents='all';return !!document.elementFromPoint(r.x+r.width/2+1,r.y+r.height/2+1)?.closest('.piece-svg');}finally{p.style.pointerEvents=pp;a.style.pointerEvents=ap;}})()`),'Rendered arrow layer is above queen at its origin');
   await railOrientation(false);
   assert(await evaluate(`!!document.querySelector('[data-arrow-role="played"].chess-arrow--best')`),'Played best arrow is not green');
   const orientation=await evaluate(`document.querySelector('[data-square]').dataset.square`);
@@ -141,8 +177,6 @@ async function reviewFlow() {
   assert(await evaluate(`!!document.querySelector('[data-arrow-role="played"].chess-arrow--blunder')`),'Blunder arrow not graded red');
   await touch('.review-ribbon [data-review-jump="4"]');
   await wait(`document.querySelector('.review-ribbon [aria-current="step"]').dataset.reviewJump==='4'`,'mate selected');
-  await touch('[data-review-mode="0"]');
-  await wait(`!!document.querySelector('[data-review-mode="1"]')`,'before-move position');
   const before=await evaluated();assert(before.includes('M'),'Pre-mate evaluation missing');
   await move(1,18); // Nc6: legal, not the searched mate. Must be accepted.
   await wait(`document.querySelector('.review-position-line strong').innerText==='Your analysis'`,'free analysis');
@@ -161,15 +195,18 @@ async function reviewFlow() {
   await touch('[data-action="review-best"]');await wait(`!!document.querySelector('[data-arrow-role="best"]')`,'branch best reveal');
   await touch('[data-action="review-undo"]');await wait(`document.querySelector('.review-position-line .coach-kicker').innerText.toLowerCase().includes('black')`,'undo restored Black turn');await noBest('undo hides best');await evaluated();
   await touch('[data-action="review-reset"]');await wait(`document.querySelector('.review-verdict').innerText==='Best move'`,'restore saved game');
-  assert.equal(await evaluated(),'−M0','Reset lost saved mate');
+  assert.match(await evaluated(),/−M[1-9]/,'Reset lost pre-move position');
   await touch('.review-ribbon [data-review-jump="1"]');
   await touch('.review-ribbon [data-review-jump="4"]');
   await wait(`document.querySelector('.review-ribbon [aria-current="step"]').dataset.reviewJump==='4'`,'rapid navigation settled');
-  await delay(2200);assert.equal(await evaluated(),'−M0','Stale analysis overwrote terminal score');
+  await delay(2200);assert.match(await evaluated(),/−M[1-9]/,'Stale analysis overwrote pre-move score');
   await touch('[data-action="review-list"]');await touch('#sheet-scroll [data-review-jump="1"]',true);await noBest('jump hides best');
   await touch('[data-action="review-details"]');adb('shell','input','keyevent','4');await delay(400);
   assert.equal(await evaluate(`document.querySelector('#app').dataset.screen`),'review','Back left review');
   await touch('[data-action="review-back"]');
+  await wait(`document.querySelector('#app').dataset.screen==='home'`,'completed review exits Home');
+  assert.equal(await evaluate(`document.querySelectorAll('[data-action="resume"]').length`),0,'Finished game advertised Resume');
+  assert(await evaluate(`document.querySelector('[data-action="review-open"]').innerText.includes('Review last game')`),'Missing review-last-game entry');
   console.log('PASS: graded played arrows, explicit best, two-side legal analysis, evaluation changes, fixed orientation, undo/reset, filters and native Back');
 }
 const pack=readFileSync('app/src/main/assets/puzzles/lichess-pack.tsv','utf8').trim().split(/\r?\n/).map((line,i)=>{const f=line.split('\t');return {index:i+6,rating:Number(f[3]),moves:f[2].split(' '),band:i<50?'foundation':i<100?'intermediate':i<150?'challenging':i<200?'advanced':'expert'};});
@@ -195,17 +232,22 @@ async function puzzleFlow() {
   await home();await touch('[data-nav="learn"]');await screenshot('knightline-v04-learn');
   await touch('[data-puzzle-filter="warmup"]',true);await touch('[data-puzzle="0"]',true);
   await move(60,52);await wait(`document.querySelector('.puzzle-feedback').innerText.includes('misses the tactic')`,'wrong move feedback');
+  assert(await evaluate(`document.querySelector('[data-square="52"]').getAttribute('aria-label').includes('rook')`),'Legal wrong move was not played');
+  await touch('[data-action="puzzle-undo"]');
+  await wait(`!!document.querySelector('[data-action="puzzle-hint"]')`,'native Undo complete');
+  assert(await evaluate(`document.querySelector('[data-square="60"]').getAttribute('aria-label').includes('rook')`),'Undo did not restore puzzle');
   for(let i=0;i<4;i++)await touch('[data-action="puzzle-hint"]');
   await move(60,4);await wait(`!!document.querySelector('[data-action="puzzle-next"]')`,'assisted solve');
   await touch('[data-action="nav-learn"]');await touch('[data-puzzle-filter="missed"]',true);
   assert(await evaluate(`!!document.querySelector('[data-puzzle="0"]')`),'Assisted puzzle missing from practice');
   await touch('[data-puzzle="0"]',true);await move(60,4);await wait(`!!document.querySelector('[data-action="puzzle-next"]')`,'clean retry');
   await touch('[data-action="nav-learn"]');await touch('[data-puzzle-filter="missed"]',true);
-  assert.equal(await evaluate(`!!document.querySelector('[data-puzzle="0"]')`),false,'Clean solve did not clear missed queue');
+  assert.equal(await evaluate(`!!document.querySelector('[data-puzzle="0"]')`),true,'Retry erased lifetime mistake');
+  assert(!await evaluate(`document.querySelector('[data-puzzle="0"]').innerText.includes('Unassisted')`),'Known answer received clean credit');
   const selected=[pack[0],pack[50],pack[100],pack[150],pack[200]];
   const promotion=pack.find(p=>p.moves.some((m,i)=>i%2===1&&m.length===5));if(promotion&&!selected.includes(promotion))selected.push(promotion);
   for(const entry of selected){await openPuzzle(entry);await solve(entry);await screenshot('knightline-v04-puzzle-'+entry.band);}
-  await home();await touch('[data-action="resume"]',true);await wait(`!!document.querySelector('[data-action="review-open"]')`,'independent saved mate');
+  await home();await wait(`!!document.querySelector('[data-action="review-open"]')`,'independent saved mate');
   await touch('[data-action="review-open"]');await wait(`document.querySelector('#app').dataset.screen==='review'`,'saved review');
   assert(await evaluate(`document.querySelector('.review-counter').innerText.includes('4 moves')`),'Puzzles changed saved game');
   console.log('PASS: difficulty packs, missed/assisted/clean solves, complete multi-move replies, promotion, saved-game isolation');
@@ -220,8 +262,8 @@ async function persistenceFlow() {
   await touch('[data-nav="learn"]');await touch('[data-puzzle-filter="missed"]',true);
   assert(await evaluate(`!!document.querySelector('[data-puzzle="1"]')`),'Missed puzzle lost on restart');
   await touch('[data-puzzle-filter="warmup"]',true);
-  assert(await evaluate(`document.querySelector('[data-puzzle="0"]').innerText.includes('Unassisted')`),'Clean solve lost on restart');
-  await home();await touch('[data-action="resume"]',true);await wait(`!!document.querySelector('[data-action="review-open"]')`,'saved match after restart');
+  assert(!await evaluate(`document.querySelector('[data-puzzle="0"]').innerText.includes('Unassisted')`),'Restart erased failure history');
+  await home();await wait(`!!document.querySelector('[data-action="review-open"]')`,'saved match after restart');
   console.log('PASS: clean progress, missed collection and independent saved match survive process restart');
 }
 async function botReviewFlow() {
@@ -229,7 +271,7 @@ async function botReviewFlow() {
   await touch('[data-confirm="accept"]',true);await wait(`!!document.querySelector('[data-action="review-open"]')`,'resigned bot game');
   await touch('[data-action="review-open"]');
   await wait(`document.querySelector('.review-overview-status')?.innerText.includes('ANALYSIS READY')`,'bot review analysis',60000);
-  assert(await evaluate(`document.querySelector('.review-player-key').innerText.includes('You') && document.querySelector('.review-player-key').innerText.includes('Stockfish')`),'Bot identity missing');
+  assert(await evaluate(`document.querySelector('.review-player-key').textContent.includes('You') && document.querySelector('.review-player-key').textContent.includes('Stockfish')`),'Bot identity missing');
   await touch('[data-review-filter="mine"]',true);
   assert(await evaluate(`[...document.querySelectorAll('.highlight-player')].every(e=>e.innerText.startsWith('You'))`),'My moves contains opponent');
   await touch('[data-review-filter="both"]',true);
@@ -243,12 +285,11 @@ async function challengeFlow() {
   console.log('PASS: continuous advanced puzzle and promotion flow');
 }
 async function reviewPromotionFlow() {
-  await home();await touch('[data-action="resume"]',true);await touch('[data-action="review-open"]');
+  await home();await touch('[data-action="review-open"]',true);
   await wait(`document.querySelector('#bottom-sheet').dataset.sheetKind==='review-overview'`,'review overview');
   adb('shell','input','keyevent','4');await wait(`document.querySelector('#sheet-backdrop').hidden`,'overview closed');
   await touch('.review-ribbon [data-review-jump="1"]');
   await wait(`document.querySelector('.review-ribbon [aria-current="step"]').dataset.reviewJump==='1'`,'first move');
-  await touch('[data-review-mode="0"]');await wait(`!!document.querySelector('[data-review-mode="1"]')`,'initial position');
   const orientation=await evaluate(`document.querySelector('[data-square]').dataset.square`);
   for(const m of [[48,32],[15,31],[32,24],[31,39],[24,16],[39,47],[16,9],[47,54],[9,0,2]])await move(...m);
   await wait(`document.querySelector('[data-square="0"]').getAttribute('aria-label').toLowerCase().includes('knight')`,'review knight underpromotion');
@@ -259,9 +300,60 @@ async function reviewPromotionFlow() {
   await touch('[data-action="review-reset"]');await wait(`document.querySelector('.review-position-line strong').innerText!=='Your analysis'`,'return to saved game');
   console.log('PASS: review underpromotion, both-side nine-ply line, Undo and reset');
 }
+
+async function libraryFeedbackFlow() {
+  await home();
+  assert(!await evaluate(`document.querySelector('#main-content').innerText.includes('Local only')`),'Unnecessary Home box remains');
+  await touch('[data-action="nav-history"]',true);
+  await wait(`document.querySelector('#app').dataset.screen==='history' && !!document.querySelector('[data-archive-id]')`,'native library');
+  const oldId=await evaluate(`[...document.querySelectorAll('[data-archive-id]')].find(e=>e.innerText.includes('4 plies')&&e.innerText.includes('0–1'))?.dataset.archiveId`);
+  assert(oldId,'Completed test game not archived');
+  await touch('[data-action="nav-home"]');await touch('[data-nav="play"]');await touch('[data-action="setup-pass"]',true);
+  await touch('[data-choice="clock"][data-value="4"]',true);await touch('[data-setup-start]',true);
+  await wait(`document.querySelector('#app').dataset.screen==='game' || !!document.querySelector('[data-confirm="accept"]')`,'start or replacement confirmation');
+  if(await evaluate(`!!document.querySelector('[data-confirm="accept"]')`))await touch('[data-confirm="accept"]',true);
+  await wait(`document.querySelector('#app').dataset.screen==='game'`,'new active game');await move(53,45);
+  await touch('[data-action="nav-home"]');await touch('[data-action="nav-history"]',true);
+  const count=await evaluate(`document.querySelectorAll('[data-archive-id]').length`);
+  await touch(`[data-archive-id="${oldId}"]`,true);
+  await wait(`document.querySelector('#bottom-sheet').dataset.sheetKind==='review-overview'`,'archived highlights');
+  adb('shell','input','keyevent','4');await wait(`document.querySelector('#sheet-backdrop').hidden`,'highlights dismissed');
+  assert(await evaluate(`document.querySelector('.review-counter').innerText.includes('4 moves')`),'Opened wrong archived game');
+  await move(52,36);await move(12,28);await evaluated();await layout('archived alternate line');
+  await touch('[data-action="review-back"]');await wait(`document.querySelector('#app').dataset.screen==='home'`,'archive Back exits Home');
+  await touch('[data-action="resume"]',true);await wait(`document.querySelector('#app').dataset.screen==='game'`,'active game resumes');
+  assert(await evaluate(`document.querySelector('[data-square="45"]').getAttribute('aria-label').includes('pawn')&&document.querySelector('[data-square="52"]').getAttribute('aria-label').includes('pawn')&&document.querySelector('[data-square="36"]').getAttribute('aria-label').includes('empty')`),'Archive changed active board');
+  await touch('[data-action="nav-home"]');await touch('[data-nav="profile"]');
+  for(const key of ['sound','vibration']) {
+    if(await evaluate(`document.querySelector('[data-feedback="${key}"]').getAttribute('aria-checked')==='true'`))await touch(`[data-feedback="${key}"]`,true);
+  }
+  await touch('[data-action="feedback-preview"]',true);
+  await touch('[data-feedback="sound"]',true);await touch('[data-action="feedback-preview"]',true);
+  await screenshot('knightline-v05-feedback');
+  ws.close();adb('shell','am','force-stop','com.eladbiller.knightline');
+  adb('shell','am','start','-n','com.eladbiller.knightline/com.traillink.KnightlineActivity');await delay(1000);await connect();
+  await wait(`!!document.querySelector('[data-nav="profile"]')`,'restarted');await touch('[data-nav="profile"]');
+  assert.equal(await evaluate(`document.querySelector('[data-feedback="sound"]').getAttribute('aria-checked')`),'true','Sound preference lost');
+  assert.equal(await evaluate(`document.querySelector('[data-feedback="vibration"]').getAttribute('aria-checked')`),'false','Vibration preference lost');
+  await touch('[data-feedback="vibration"]',true);await touch('[data-action="feedback-preview"]',true);
+  await touch('[data-nav="home"]');await touch('[data-action="nav-history"]',true);
+  assert.equal(await evaluate(`document.querySelectorAll('[data-archive-id]').length`),count,'Library changed across restart');
+  await screenshot('knightline-v05-library');
+  await touch('[data-action="nav-home"]');await touch('[data-action="resume"]',true);
+  await touch('[data-action="game-menu"]');await touch('[data-native-action="match.clear"]',true);await touch('[data-confirm="accept"]',true);
+  await wait(`document.querySelector('#app').dataset.screen==='home'`,'clear active save');
+  assert.equal(await evaluate(`document.querySelectorAll('[data-action="resume"]').length`),0,'Active save not cleared');
+  await touch('[data-action="nav-history"]',true);await touch(`[data-archive-id="${oldId}"]`,true);
+  await wait(`document.querySelector('#app').dataset.screen==='review'`,'archive without active game');
+  adb('shell','input','keyevent','4');await wait(`document.querySelector('#sheet-backdrop').hidden`,'overview closed');
+  await move(52,36);await evaluated();await touch('[data-action="review-back"]');
+  await wait(`document.querySelector('#app').dataset.screen==='home'`,'review-only exit');
+  console.log('PASS: archive isolation, persisted library, independent feedback preferences, review without active save, Home exits');
+}
 try {
   adb('shell','am','start','-n','com.eladbiller.knightline/com.traillink.KnightlineActivity');await delay(1000);await connect();
   await wait(`!!document.querySelector('#main-content')?.firstElementChild`,'loaded app');
+  if(!['persist','library'].includes(mode))await beginFrameAudit();
   if(record){const child=spawn(adbPath,['-s',serial,'shell','screenrecord','--time-limit','45','--bit-rate','3000000','/sdcard/knightline-analysis-flow.mp4']);recording=new Promise(r=>child.on('close',r));}
   if(mode==='all'||mode==='review')await reviewFlow();
   if(mode==='all'||mode==='puzzles')await puzzleFlow();
@@ -269,6 +361,8 @@ try {
   if(mode==='bot-review')await botReviewFlow();
   if(mode==='challenge')await challengeFlow();
   if(mode==='review-promotion')await reviewPromotionFlow();
-  console.log('PASS v0.4 flows at font '+adb('shell','settings','get','system','font_scale'));
+  if(mode==='library')await libraryFeedbackFlow();
+  if(!['persist','library'].includes(mode))await endFrameAudit();
+  console.log('PASS v0.5 flows at font '+adb('shell','settings','get','system','font_scale'));
 } catch(e) { console.error(e.stack);process.exitCode=1;if(ws?.readyState===1){console.error(await evaluate('document.body.innerText'));await screenshot('knightline-v04-failure');} }
 finally { if(recording){await recording;adb('pull','/sdcard/knightline-analysis-flow.mp4',record);}ws?.close(); }

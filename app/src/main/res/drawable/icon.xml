@@ -1,6 +1,10 @@
-<vector xmlns:android="http://schemas.android.com/apk/res/android" android:width="108dp" android:height="108dp" android:viewportWidth="108" android:viewportHeight="108">
- <path android:fillColor="#0B1426" android:pathData="M0,0h108v108h-108z" />
- <group android:translateX="22" android:translateY="20" android:scaleX="2" android:scaleY="2">
-  <path android:fillColor="#F6F0DF" android:fillType="evenOdd" android:pathData="M7,27h20v3H7zM9,24c0,-5 3,-8 8,-11l-3,-2 -5,5 -5,-4 8,-8 1,-3 4,3c7,1 10,8 9,20H9zM14,7a1.3,1.3 0,1 0,0 2.6A1.3,1.3 0,0 0,14 7z" />
- </group>
+<vector xmlns:android="http://schemas.android.com/apk/res/android" xmlns:aapt="http://schemas.android.com/aapt"
+    android:width="108dp" android:height="108dp" android:viewportWidth="100" android:viewportHeight="100">
+    <path android:pathData="M23,0H77Q100,0 100,23V77Q100,100 77,100H23Q0,100 0,77V23Q0,0 23,0Z">
+        <aapt:attr name="android:fillColor">
+            <gradient android:startX="0" android:startY="0" android:endX="75" android:endY="100" android:type="linear" android:startColor="#638EFF" android:endColor="#3456CE"/>
+        </aapt:attr>
+    </path>
+    <path android:fillColor="#FFF8E8" android:pathData="M26,78h49v7H26zM29,71c0,-10 5,-19 17,-27l-9,3 -9,11 -12,-9 17,-20 5,-13 10,10c22,0 30,18 25,45H29Z"/>
+    <path android:fillColor="#466ADA" android:pathData="m40,32 5,2 -4,4 -4,-2zM59,39c7,7 9,18 6,32h8c5,-18 2,-28 -14,-32Z"/>
 </vector>

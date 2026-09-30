@@ -19,6 +19,8 @@
     lessons: {items: []},
     match: null,
     review: {available: false},
+    archive: {entries: [], limit: 100},
+    settings: {sound: true, vibration: true},
   };
   let port = null;
   let sequence = 0;
@@ -32,16 +34,14 @@
   let movePending = false;
   let showReviewOverview = false;
   let reviewFilter = 'both';
-  let puzzleFilter = 'intermediate';
+  let puzzleFilter = 'warmup';
   let puzzlePage = 0;
 
   const clockNames = ['10 | 0', '5 | 0', '3 | 2', '1 | 0', 'Untimed'];
   const strengthNames = ['Easy', 'Medium', 'Hard'];
 
   function knightIcon() {
-    return '<svg viewBox="0 0 32 32" role="img" focusable="false" aria-hidden="true">' +
-      '<path fill="currentColor" fill-rule="evenodd" d="M7 27h20v3H7zM9 24c0-5 3-8 8-11l-3-2-5 5-5-4 8-8 1-3 4 3c7 1 10 8 9 20H9Zm5-17a1.3 1.3 0 1 0 0 2.6A1.3 1.3 0 0 0 14 7Z"/>' +
-      '</svg>';
+    return '<img src="knightline.svg" width="34" height="34" alt="" aria-hidden="true">';
   }
 
   function icon(name) {
@@ -141,19 +141,25 @@
     model.match = payload.match && payload.match.position ? payload.match : null;
     model.review = object(payload.review, model.review);
     model.puzzle = object(payload.puzzle, {});
+    model.archive = object(payload.archive, model.archive);
+    model.settings = object(payload.settings, model.settings);
     // Any authoritative state response completes (or rejects) the one pending
     // board command. This prevents rapid taps from queuing a second move against
     // a position that is already changing natively.
     movePending = false;
-    if (!model.match && (model.screen === 'game' || model.screen === 'review')) model.screen = 'home';
+    if (!model.match && model.screen === 'game' || !model.review.available && model.screen === 'review') model.screen = 'home';
     if (selectedSquare != null && !canSelectFrom(selectedSquare)) selectedSquare = null;
     render();
     if (model.screen === 'review' && !model.review.liveGame && showReviewOverview) {
       showReviewOverview = false; openReviewOverview();
     } else if (overlay && overlay.kind === 'review-overview') {
       const scroll = sheetScroll.scrollTop;
+      const statisticsOpen = !!sheetScroll.querySelector('.overview-statistics[open]');
+      const focus = document.activeElement?.dataset.reviewFilter;
       sheetScroll.innerHTML = reviewOverviewMarkup();
+      if(statisticsOpen) sheetScroll.querySelector('.overview-statistics').open = true;
       sheetScroll.scrollTop = scroll;
+      if(focus) sheetScroll.querySelector('[data-review-filter="' + focus + '"]')?.focus({preventScroll:true});
     }
   }
 
@@ -207,6 +213,7 @@
     if (model.screen === 'play') renderPlay();
     else if (model.screen === 'learn') renderLearn();
     else if (model.screen === 'profile') renderProfile();
+    else if (model.screen === 'history') renderHistory();
     else if (model.screen === 'game') renderGame();
     else if (model.screen === 'review') renderReview();
     else if (model.screen === 'puzzle') renderPuzzle();
@@ -226,11 +233,15 @@
       header.innerHTML = '<div class="header-brand"><button class="header-back" type="button" data-action="nav-learn" aria-label="Back to Learn">' + icon('back') + '</button><p class="brand-word">Puzzle practice</p></div><span class="header-status">Offline</span>';
       return;
     }
+    if (model.screen === 'history') {
+      header.innerHTML = '<div class="header-brand"><button class="header-back" type="button" data-action="nav-home" aria-label="Back to Home">' + icon('back') + '</button><p class="brand-word">Game library</p></div><span class="header-status">Review only</span>';
+      return;
+    }
     const focused = model.screen === 'game' || model.screen === 'review';
     header.innerHTML = focused
       ? '<div class="header-brand"><button class="header-back" type="button" data-action="' + (model.screen === 'review' ? 'review-back' : 'nav-home') + '" aria-label="Back">' + icon('back') + '</button>' +
-        '<div><p class="brand-word">' + (model.screen === 'review' ? 'Game review' : 'Knightline') + '</p></div></div>' +
-        (model.screen === 'review' ? '<button class="button button--compact" type="button" data-action="review-overview">' + icon('review') + 'Overview</button>' : '<div class="header-status header-status--compact"><span class="status-dot ' + (connected ? '' : 'status-dot--idle') + '"></span><span>' + escape(connected ? 'Connected' : 'Saved') + '</span></div>')
+        '<div><p class="brand-word">' + (model.screen === 'review' ? 'Review' : 'Knightline') + '</p></div></div>' +
+        (model.screen === 'review' ? '<button class="button button--compact" type="button" data-action="review-overview">' + icon('review') + 'Highlights</button>' : '<div class="header-status header-status--compact"><span class="status-dot ' + (connected ? '' : 'status-dot--idle') + '"></span><span>' + escape(connected ? 'Connected' : 'Saved') + '</span></div>')
       : '<div class="header-brand"><div class="brand-mark" aria-hidden="true">' + knightIcon() + '</div>' +
         '<p class="brand-word">Knightline</p></div>' +
         '<div class="header-status"><span class="status-dot ' + (connected ? '' : 'status-dot--idle') + '"></span>' +
@@ -271,21 +282,23 @@
       quickCard('room', 'Private room', 'Online peer-to-peer room code', 'online-menu') +
       quickCard('learn', 'Learn an opening', 'Guided lines with progressive hints', 'nav-learn') +
       '</section>' +
-      '<article class="surface home-activity"><div class="section-heading"><div><p class="eyebrow">Local only</p><h2 class="surface-title">Your private rating</h2></div>' +
-      '<button class="section-action" type="button" data-action="nav-profile">View profile</button></div>' +
-      '<div class="activity-list"><div class="activity-item"><span class="activity-badge">⌁</span><div><p class="activity-title">' +
-      escape(profile.scope || 'Private skill rating · on this device') + '</p><p class="activity-copy">No leaderboard, accounts, or global claims.</p></div>' +
-      '<span class="activity-value">' + escape(profile.ratedGames || 0) + ' rated</span></div>' +
-      '<div class="activity-item"><span class="activity-badge">◈</span><div><p class="activity-title">Built for offline play</p>' +
-      '<p class="activity-copy">Bots, lessons, review, saves and Bluetooth work without a network.</p></div><span class="activity-value activity-value--neutral">Ready</span></div>' +
-      '</div></article></section>';
+      '<button class="surface library-link" type="button" data-action="nav-history"><span class="quick-icon">' + icon('review') + '</span><span><strong>Game library</strong><small>' + array(model.archive.entries).length + ' saved · revisit your games</small></span><span aria-hidden="true">›</span></button></section>';
   }
 
   function resumeCard(match) {
+    if (match.winner >= 0) return '<article class="surface surface--flat"><p class="eyebrow">Last game · finished</p><h2 class="surface-title">' + escape(match.opponent || 'Private game') + '</h2><div class="hero-actions"><button class="button button--mint" type="button" data-action="review-open" ' + (!match.canReview ? 'disabled' : '') + '>' + icon('review') + 'Review last game</button><button class="button button--quiet" type="button" data-action="nav-history">All games</button></div></article>';
     return '<article class="surface surface--flat"><div class="section-heading"><div><p class="eyebrow">Saved board</p><h2 class="surface-title">' +
       escape(match.yourTurn ? 'Your move is waiting' : 'Match in progress') + '</h2><p class="subtitle">' +
       escape(match.opponent || 'Private game') + ' · ' + escape(match.clock && match.clock.preset || 'Untimed') + '</p></div>' +
       '<button class="button button--mint button--compact" type="button" data-action="resume">Resume</button></div></article>';
+  }
+
+  function renderHistory() {
+    const library = model.archive, entries = array(library.entries);
+    main.innerHTML = '<section class="screen"><div><p class="eyebrow">Your games</p><h1 class="title">Every game, a lesson.</h1><p class="subtitle">Your latest ' + library.limit + ' games are saved on this phone. Open a review without changing your active match.</p></div>' +
+      (library.error ? '<p class="library-error" role="alert">' + escape(library.error) + '</p>' : '') +
+      '<div class="game-library">' + entries.map(e => '<button class="surface archived-game" type="button" data-archive-id="' + escape(e.id) + '"><div class="archive-heading"><span class="eyebrow">' + escape(e.mode) + '</span><span class="archive-result">' + escape(e.result) + '</span></div><div class="archive-players"><span><i class="side-disc side-disc--white"></i>' + escape(e.white) + '</span><span><i class="side-disc side-disc--black"></i>' + escape(e.black) + '</span></div><div class="archive-footer"><small>' + escape(new Date(e.at).toLocaleDateString(undefined,{month:'short',day:'numeric',year:'numeric'})) + ' · ' + e.plies + ' plies</small><strong>Review →</strong></div></button>').join('') +
+      (entries.length ? '' : '<article class="empty-state"><div><h2 class="surface-title">Your story starts here.</h2><p class="body-copy">Play a game and its moves will be saved automatically.</p><button class="button button--primary" type="button" data-action="nav-play">Start a game</button></div></article>') + '</div></section>';
   }
 
   function roomStatusCard(match) {
@@ -326,7 +339,7 @@
       quickCard('pass', 'Pass & play', 'Two people, one device', 'setup-pass') +
       quickCard('bluetooth', 'Nearby Bluetooth', 'No internet required', 'transport-menu') +
       quickCard('room', 'Private Peer room', 'Invite only, internet for signaling', 'online-menu') +
-      quickCard('save', 'Saved board', model.match ? 'Resume where you stopped' : 'No game in progress', model.match ? 'resume' : 'setup-bot') +
+      quickCard('review', 'Game library', 'Review your saved games', 'nav-history') +
       '</div>' +
       '<article class="surface"><p class="eyebrow">Match integrity</p><p class="body-copy">A clean standard game can update your on-device private skill estimate. Hints, takebacks, lessons and review branches are clearly labelled Practice.</p></article></section>';
   }
@@ -337,13 +350,13 @@
     const solved = puzzles.filter((p) => p.solved).length;
     const clean = puzzles.filter(p => p.clean).length, assisted = puzzles.filter(p => p.solved && !p.clean).length;
     const missed = puzzles.filter(p => p.missed).length;
-    const bands = [['foundation','Foundation','800–1199'],['intermediate','Intermediate','1200–1599'],['challenging','Challenging','1600–1999'],['advanced','Advanced','2000–2399'],['expert','Expert','2400+'],['warmup','Warm-up','Mate in one']];
+    const bands = [['warmup','Warm-up','Mate in one'],['foundation','Foundation','800–1199'],['intermediate','Intermediate','1200–1599'],['challenging','Challenging','1600–1999'],['advanced','Advanced','2000–2399'],['expert','Expert','2400+']];
     const filtered = puzzles.filter(p => puzzleFilter === 'missed' ? p.missed : p.band === puzzleFilter);
     puzzlePage = Math.max(0, Math.min(puzzlePage, Math.ceil(filtered.length / 10) - 1));
     const visible = filtered.slice(puzzlePage * 10, puzzlePage * 10 + 10);
     main.innerHTML =
       '<section class="screen"><div><p class="eyebrow">Learn</p><h1 class="title">Calculate further.</h1><p class="subtitle">Real combinations. Strong replies. Entirely offline.</p></div>' +
-      '<article class="surface puzzle-hero"><div class="section-heading"><div><p class="eyebrow">Your practice</p><h2 class="surface-title">' + solved + ' / ' + puzzles.length + ' solved</h2></div></div><div class="puzzle-progress-row"><span><strong>' + clean + '</strong> Unassisted</span><span><strong>' + assisted + '</strong> With help / retries</span></div><button class="button button--wide missed-collection" type="button" data-puzzle-filter="missed">' + icon('undo') + 'Practice missed <span>' + missed + '</span></button><p class="tiny">Hints and missed attempts go here. A clean solve clears them.</p></article>' +
+      '<article class="surface puzzle-hero"><div class="section-heading"><div><p class="eyebrow">Your practice</p><h2 class="surface-title">' + solved + ' / ' + puzzles.length + ' solved</h2></div></div><div class="puzzle-progress-row"><span><strong>' + clean + '</strong> First try · no help</span><span><strong>' + assisted + '</strong> Practice / earlier solves</span></div><button class="button button--wide missed-collection" type="button" data-puzzle-filter="missed">' + icon('undo') + 'Practice again <span>' + missed + '</span></button><p class="tiny">Hints and mistakes stay recorded, even after a restart. Earlier-version solves are preserved as practice because their first-attempt history cannot be verified.</p></article>' +
       '<section class="difficulty-grid" aria-label="Puzzle difficulty">' + bands.map(([key,label,range])=>'<button class="difficulty-card" type="button" data-puzzle-filter="' + key + '" aria-pressed="' + (puzzleFilter === key) + '"><strong>' + label + '</strong><span>' + range + '</span><small>' + puzzles.filter(p=>p.band===key).length + ' puzzles</small></button>').join('') + '</section>' +
       '<article class="surface puzzle-library"><div class="section-heading"><h2 class="surface-title">' + (puzzleFilter === 'missed' ? 'Practice missed' : bands.find(b=>b[0]===puzzleFilter)?.[1] || 'Puzzles') + '</h2><span class="tiny">' + filtered.length + ' positions</span></div><div class="puzzle-pack">' + visible.map(p=>'<button class="puzzle-entry" type="button" data-puzzle="' + p.index + '"><span class="puzzle-number">' + (p.clean ? icon('check') : p.solved ? '◐' : String(p.index + 1).padStart(2,'0')) + '</span><span><strong>' + escape(p.name) + '</strong><small>' + (p.rating ? 'Difficulty ' + p.rating + ' · ' : '') + (p.clean ? 'Unassisted' : p.missed ? 'Needs practice' : p.solved ? 'Solved with help' : 'Unsolved') + '</small></span><span aria-hidden="true">›</span></button>').join('') + (filtered.length ? '' : '<p class="body-copy">Nothing to revisit yet. Choose a difficulty and start a puzzle.</p>') + '</div>' + (filtered.length > 10 ? '<div class="puzzle-pagination"><button class="button button--compact" type="button" data-puzzle-page="-1" ' + (puzzlePage===0?'disabled':'') + '>Previous</button><span>' + (puzzlePage+1) + ' / ' + Math.ceil(filtered.length/10) + '</span><button class="button button--compact" type="button" data-puzzle-page="1" ' + ((puzzlePage+1)*10>=filtered.length?'disabled':'') + '>Next</button></div>' : '') + '<p class="tiny">Puzzle difficulty is from Lichess, not your player rating. 250 CC0 positions plus six original warm-ups. Progress stays on this phone.</p></article>' +
       '<div class="section-heading"><div><p class="eyebrow">Build your repertoire</p><h2 class="surface-title">Guided openings</h2></div></div>' +
@@ -359,7 +372,7 @@
     const p = model.puzzle;
     if (!p || !p.available) { renderLearn(); return; }
     const action = ['Hint', 'Show piece', 'Show move', 'Hide hint'][p.hint || 0];
-    main.innerHTML = '<section class="screen puzzle-workspace"><div class="puzzle-title"><p class="eyebrow">' + (p.rating ? 'Difficulty ' + p.rating + ' · ' + p.steps + '-move line' : 'Warm-up · mate in one') + '</p><h1 class="surface-title">' + escape(p.name) + '</h1></div><div class="puzzle-status"><span class="side-disc side-disc--' + (p.me === 0 ? 'white' : 'black') + '"></span><strong>' + (p.solved ? 'Solved!' : p.pendingReply ? 'Opponent replies…' : p.me === 0 ? 'White to move' : 'Black to move') + '</strong><span>' + p.completedSteps + ' / ' + p.steps + '</span></div><div id="board-host" class="board-stage">' + boardLayout(p.position, p.me, !!p.yourTurn, {}, false) + '</div><article class="puzzle-feedback" aria-live="polite"><p class="eyebrow">' + (p.solved ? 'Pattern found' : p.hint ? 'A little direction' : 'Calculate the continuation') + '</p><p class="body-copy">' + escape(p.copy) + '</p></article><div class="puzzle-actions"><button class="button" type="button" data-action="puzzle-retry">' + icon('undo') + 'Retry</button><button class="button button--primary" type="button" data-action="' + (p.solved ? 'puzzle-next' : 'puzzle-hint') + '" ' + (p.pendingReply ? 'disabled' : '') + '>' + (p.solved ? 'Next puzzle →' : icon('hint') + escape(action)) + '</button></div></section>';
+    main.innerHTML = '<section class="screen puzzle-workspace"><div class="puzzle-title"><p class="eyebrow">' + (p.rating ? 'Difficulty ' + p.rating + ' · ' + p.steps + '-move line' : 'Warm-up · mate in one') + '</p><h1 class="surface-title">' + escape(p.name) + '</h1></div><div class="puzzle-status"><span class="side-disc side-disc--' + (p.me === 0 ? 'white' : 'black') + '"></span><strong>' + (p.failed ? 'Not quite — try another idea' : p.solved ? (p.assisted ? 'Practice solve' : 'First-try solve!') : p.pendingReply ? 'Opponent replies…' : p.me === 0 ? 'White to move' : 'Black to move') + '</strong><span>' + p.completedSteps + ' / ' + p.steps + '</span></div><div id="board-host" class="board-stage">' + boardLayout(p.position, p.me, !!p.yourTurn, {}, false) + '</div><article class="puzzle-feedback' + (p.failed ? ' puzzle-feedback--mistake' : '') + '" aria-live="polite"><p class="eyebrow">' + (p.failed ? 'Your move is shown' : p.solved ? 'Pattern found' : p.hint ? 'A little direction' : p.assisted ? 'Practice · earlier help or retry' : 'Calculate the continuation') + '</p><p class="body-copy">' + escape(p.copy) + '</p></article><div class="puzzle-actions"><button class="button" type="button" data-action="puzzle-retry">Restart</button><button class="button button--primary" type="button" data-action="' + (p.failed ? 'puzzle-undo' : p.solved ? 'puzzle-next' : 'puzzle-hint') + '" ' + (p.pendingReply ? 'disabled' : '') + '>' + (p.failed ? icon('undo') + 'Undo mistake' : p.solved ? 'Next puzzle →' : icon('hint') + escape(action)) + '</button></div></section>';
     attachBoardInteractions();
   }
 
@@ -379,6 +392,7 @@
     main.innerHTML =
       '<section class="screen"><div><p class="eyebrow">Profile</p><h1 class="title">Your private skill.</h1><p class="subtitle">' +
       escape(profile.scope || 'Private skill rating · on this device') + '</p></div>' +
+      '<article class="surface feedback-settings"><div class="section-heading"><div><p class="eyebrow">Make it yours</p><h2 class="surface-title">Sound & vibration</h2></div></div>' + ['sound','vibration'].map(key => '<button class="setting-toggle" type="button" role="switch" aria-checked="' + !!model.settings[key] + '" data-feedback="' + key + '"><span><strong>' + (key==='sound'?'Game sounds':'Vibration') + '</strong><small>' + (key==='sound'?'Soft move, mistake and finish sounds':'Gentle feedback for board actions') + '</small></span><span class="switch-track" aria-hidden="true"><i></i></span></button>').join('') + '<p class="tiny">Your phone’s volume and system haptic settings still apply.</p><button class="button button--compact" type="button" data-action="feedback-preview">Test feedback</button></article>' +
       '<article class="surface hero"><div class="hero-grid"><div><p class="eyebrow">' + (profile.provisional ? 'Provisional estimate' : 'Established estimate') +
       '</p><h2 class="title">Keep playing clean games.</h2><p class="subtitle">Bot anchors are estimated: Easy 600, Medium 1200, Hard 1800.</p></div><div class="hero-rating"><span class="rating-number">' +
       escape(profile.rating || 800) + '</span><span class="rating-label">Private skill</span></div></div></article>' +
@@ -470,7 +484,7 @@
     const review = object(model.review, {});
     if (!review.available) { renderGame(); return; }
     const liveGame = !!review.liveGame;
-    const scored = !liveGame && !!review.analyzed;
+    const scored = !!review.analyzed;
     const category = reviewCategory(review.variation ? '' : review.verdict);
     const key = [model.session,review.index,review.mode,review.token,review.position.seq,review.me].join(':');
     const existing = main.querySelector('.review-workspace');
@@ -480,10 +494,10 @@
       '<section class="screen screen--review review-workspace" data-position-key="' + escape(key) + '"><div class="review-position-line"><div><span class="coach-kicker">' + escape(review.variation ? (review.toMove===0?'White':'Black') + ' to move' : review.player) + '</span><strong>' + escape(title) + '</strong></div><span class="review-verdict review-verdict--' + category.key + '">' + escape(review.variation ? 'Exploring' : scored ? category.label : 'Not graded yet') + '</span></div>' +
       '<div id="board-host" class="board-stage">' + boardLayout(object(review.position, {}), Number(review.me || 0), !!review.yourTurn, {evaluation:review.evaluation}, true) + '</div>' +
       reviewTimeline(review) +
-      '<div class="review-tools"><button class="button button--compact" type="button" data-review-mode="' + (review.mode===0?1:0) + '">' + (review.mode===0?'After move':'Before move') + '</button><button class="button button--compact" type="button" data-action="review-best" aria-pressed="' + !!review.showBest + '" ' + (!review.canShowBest?'disabled':'') + '>' + (review.showBest?'Hide best':'Show best') + '</button><button class="button button--compact" type="button" data-action="review-undo" ' + (!review.variation?'disabled':'') + '>' + icon('undo') + 'Undo</button></div>' +
+      '<div class="review-tools"><button class="button button--compact" type="button" data-action="review-best" aria-pressed="' + !!review.showBest + '" ' + (!review.canShowBest?'disabled':'') + '>' + (review.showBest?'Hide best':'Show best') + '</button><button class="button button--compact" type="button" data-action="review-undo" ' + (!review.variation?'disabled':'') + '>' + icon('undo') + 'Undo</button></div>' +
       '<article class="review-insight review-insight--' + category.key + '"><button class="insight-reading" type="button" data-action="review-details"><div class="insight-heading"><span class="coach-kicker">' + (review.variation?'Independent line':'Position notes') + '</span><span class="detail-link">Details ›</span></div><p class="coach-copy">' + escape(copy) + '</p></button>' +
       '<button class="review-score-line review-live-score" type="button" data-action="review-evaluate" aria-label="Evaluate this position. Positive favors White"><span>White’s score <strong data-review-evaluation>' + escape(review.evaluation || '…') + '</strong></span><span data-review-evaluation-state>' + escape(review.evaluationState || 'Analyzing…') + '</span></button>' +
-      '<div class="review-coach-actions"><button class="button button--compact" type="button" data-action="review-reset" ' + (!review.variation&&review.mode===1&&!review.showBest?'disabled':'') + '>Return to game</button><button class="button button--primary button--compact" type="button" data-action="review-key">Next key move →</button></div></article>' +
+      '<div class="review-coach-actions"><button class="button button--compact" type="button" data-action="review-reset" ' + (!review.variation&&!review.showBest?'disabled':'') + '>Reset line</button><button class="button button--primary button--compact" type="button" data-action="review-key">Next key move →</button></div></article>' +
       '<div class="review-navigation"><button class="button" type="button" data-action="review-prev" aria-label="Previous move" ' + (review.canPrevious ? '' : 'disabled') + '>←</button><button class="button review-counter" type="button" data-action="review-list">' + escape(review.index) + ' <span>/ ' + escape(review.total) + ' moves</span></button><button class="button" type="button" data-action="review-next" aria-label="Next move" ' + (review.canNext ? '' : 'disabled') + '>→</button></div></section>';
     if (existing?.dataset.positionKey === key) {
       // Engine/grade updates must not replace squares or interrupt a drag.
@@ -534,11 +548,11 @@
     return '<div class="sheet-heading"><div><p class="eyebrow">Your game, understood</p><h2 id="sheet-title" class="sheet-title">Review highlights</h2></div><button class="icon-button" type="button" data-sheet-close aria-label="Close">' + icon('close') + '</button></div>' +
       '<div class="review-overview-status"><span class="result-badge">' + (r.liveGame ? 'Game in progress' : complete ? 'Analysis ready' : 'Analyzing on device') + '</span><span class="tiny">' + analyzed + ' / ' + moves.length + ' moves</span></div>' +
       '<p class="body-copy overview-lead">' + (r.liveGame ? 'Browse the moves now. Finish the game for scored feedback.' : keys.length ? keys.length + ' moment' + (keys.length === 1 ? '' : 's') + ' to learn from. Revisit the turning points and try a better move.' : complete ? 'No inaccuracies found in this search. Walk through the game to see Stockfish’s recommendations.' : 'Stockfish is comparing your moves with its best alternatives.') + '</p>' +
-      '<div class="overview-graph">' + reviewTimeline(r) + '</div>' +
-      '<div class="review-player-key"><span><i class="side-disc side-disc--white"></i>' + escape(r.whitePlayer) + '</span><span><i class="side-disc side-disc--black"></i>' + escape(r.blackPlayer) + '</span></div><div class="classification-table"><div class="classification-row classification-heading"><span>Move quality</span><span>White</span><span>Black</span></div>' + Object.keys(counts).map(k=>{const c=reviewCategory(k);return '<div class="classification-row"><span><i class="move-mark move-mark--' + k + '">' + c.mark + '</i>' + c.label + '</span><strong>' + counts[k][0] + '</strong><strong>' + counts[k][1] + '</strong></div>';}).join('') + '</div>' +
-      '<p class="tiny">Engine classifications, not a global accuracy rating. Offline, time-limited analysis may change with a deeper search.</p>' +
+      '<button class="button button--primary button--wide" type="button" data-action="review-start-guided">' + (keys.length ? 'Review key moments' : 'Walk through the game') + ' →</button><h3 class="key-moments-heading">Key moments</h3>' +
       '<div class="review-filters" aria-label="Highlight player filter">' + filters.map(([id,label])=>'<button class="chip" type="button" data-review-filter="' + id + '" aria-pressed="' + (reviewFilter===id) + '">' + label + '</button>').join('') + '</div><div class="overview-key-list">' + keys.map(m=>'<button class="choice choice-row" type="button" data-review-jump="' + m.index + '"><span class="move-mark move-mark--' + reviewCategory(m.verdict).key + '">' + reviewCategory(m.verdict).mark + '</span><span><small class="highlight-player">' + escape(m.player) + '</small><strong>' + Math.ceil(m.index/2) + (m.index%2?'. ':'… ') + escape(m.notation) + '</strong><small>' + escape(m.verdict) + '</small></span><span>›</span></button>').join('') + (keys.length?'':'<p class="tiny">No graded key moments for this filter.</p>') + '</div>' +
-      '<div class="sheet-footer"><button class="button button--primary button--wide" type="button" data-action="review-start-guided">' + (keys.length ? 'Review key moments' : 'Walk through the game') + ' →</button></div>';
+      '<details class="overview-statistics"><summary>All moves & game statistics</summary><div class="overview-graph">' + reviewTimeline(r) + '</div>' +
+      '<div class="review-player-key"><span><i class="side-disc side-disc--white"></i>' + escape(r.whitePlayer) + '</span><span><i class="side-disc side-disc--black"></i>' + escape(r.blackPlayer) + '</span></div><div class="classification-table"><div class="classification-row classification-heading"><span>Move quality</span><span>White</span><span>Black</span></div>' + Object.keys(counts).map(k=>{const c=reviewCategory(k);return '<div class="classification-row"><span><i class="move-mark move-mark--' + k + '">' + c.mark + '</i>' + c.label + '</span><strong>' + counts[k][0] + '</strong><strong>' + counts[k][1] + '</strong></div>';}).join('') + '</div>' +
+      '<p class="tiny">Engine classifications, not a global accuracy rating. Offline, time-limited analysis may change with a deeper search.</p></details>';
   }
 
   function reviewTimeline(review) {
@@ -1048,12 +1062,14 @@
       else if (value === 'nav-play') go('play');
       else if (value === 'nav-learn') go('learn');
       else if (value === 'nav-profile') go('profile');
+      else if (value === 'nav-history') go('history');
+      else if (value === 'feedback-preview') send('settings.preview', {}, false);
       else if (value === 'setup-bot') openSetup('bot');
       else if (value === 'setup-pass') openSetup('pass');
       else if (value === 'transport-menu') openTransportMenu();
       else if (value === 'online-menu') openOnlineMenu();
       else if (value === 'remote-setup') openSetup('remote');
-      else if (value === 'resume') send('match.resume');
+      else if (value === 'resume') { showReviewOverview = !!model.match && model.match.winner >= 0; send('match.resume'); }
       else if (value === 'coach') send('coach.advance');
       else if (value === 'coach-details') openReading(model.match.coach.heading || 'Position coach', model.match.coach.copy);
       else if (value === 'takeback') send('match.takeback');
@@ -1071,7 +1087,6 @@
       else if (value === 'review-undo') reviewCommand('undo');
       else if (value === 'review-reset') send('review.reset');
       else if (value === 'review-start-guided') { closeOverlay(); send('review.jump', {index:keyMoves()[0]?.index || 1}); }
-      else if (value === 'review-branch') { closeOverlay(); send('review.branch'); }
       else if (value === 'review-details') openReading(model.review.variation ? 'Your analysis line' : model.review.verdict || 'Position details', model.review.variation ? model.review.variationLine + '\n\nMove either side in turn. Evaluation is always from White’s perspective: positive favors White; negative favors Black. Your saved game and rating are unchanged.' : (model.review.report || 'Saved moves are being analyzed. You can move either side and see a fresh position evaluation now.') + '\n\nPosition evaluation: positive favors White; negative favors Black. Move-report comparison scores are labeled for their player.');
       else if (value === 'review-list') openReading('Move navigator', 'Choose any move to inspect it.', '<div class="move-navigator">' + array(model.review.timeline).map((m) => '<button class="choice" type="button" data-review-jump="' + m.index + '"><span class="tiny">' + escape(m.player) + '</span><strong>' + Math.ceil(m.index / 2) + (m.index % 2 ? '. ' : '… ') + escape(m.notation) + '</strong><span class="tiny">' + escape(m.verdict || 'Unscored') + '</span></button>').join('') + '</div>');
       else if (value === 'engine-info') send('engine.info', {}, false);
@@ -1083,6 +1098,13 @@
     if (navButton) {
       go(navButton.dataset.nav);
       return;
+    }
+    const savedGame = event.target.closest('[data-archive-id]');
+    if (savedGame) { showReviewOverview = true; send('archive.open', {id:savedGame.dataset.archiveId}, false); return; }
+    const feedbackToggle = event.target.closest('[data-feedback]');
+    if (feedbackToggle) {
+      const key = feedbackToggle.dataset.feedback;
+      send('settings.feedback', {key,enabled:!model.settings[key]}, false); return;
     }
     const analysisPromotion = event.target.closest('[data-analysis-promotion]');
     if (analysisPromotion && overlay?.kind === 'analysis-promotion') {
@@ -1104,11 +1126,6 @@
     }
     const puzzle = event.target.closest('[data-puzzle]');
     if (puzzle) { send('puzzle.start', {index: Number(puzzle.dataset.puzzle),collection:puzzleFilter}, false); return; }
-    const mode = event.target.closest('[data-review-mode]');
-    if (mode) {
-      send('review.mode', {mode: Number(mode.dataset.reviewMode)});
-      return;
-    }
     const jump = event.target.closest('[data-review-jump]');
     if (jump) { if (overlay) closeOverlay(); send('review.jump', {index: Number(jump.dataset.reviewJump)}); return; }
     const choice = event.target.closest('[data-choice]');

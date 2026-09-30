@@ -20,8 +20,12 @@ public final class AdvancedLearningTest {
                 int[] move=new int[]{pair[0],pair[1],5};
                 Game candidate=p.position.copy();candidate.move(candidate.turn,move[0],move[1],move[2]);
                 if(!Arrays.equals(move,best)&&candidate.winner!=p.side){
-                    check(!p.play(move[0],move[1],move[2]),"Wrong puzzle accepted "+entry.id);
-                    check(Arrays.equals(initial,p.position.b)&&p.missed,"Wrong puzzle moved board "+entry.id);break;
+                    check(p.play(move[0],move[1],move[2]),"Legal mistake not shown "+entry.id);
+                    check(!Arrays.equals(initial,p.position.b)&&p.missed&&p.failed,"Wrong puzzle state "+entry.id);
+                    check(!p.play(best[0],best[1],best[2]),"Must undo a mistake before continuing");
+                    check(p.solution()==null,"Hint leaks solution on wrong board");
+                    long revision=p.revision;
+                    check(p.undoMistake()&&p.revision>revision&&Arrays.equals(initial,p.position.b)&&p.missed,"Undo erased mistake or failed restore");break;
                 }
             }
             for(int n=0;n<4;n++)p.advanceHint();

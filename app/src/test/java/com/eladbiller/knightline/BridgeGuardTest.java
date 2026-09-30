@@ -62,5 +62,12 @@ public final class BridgeGuardTest {
         }
         check(!guard.accept(1, "removed", "review.retry", seq, true).accepted,
                 "Removed forced-best review control is not accepted");
+        check(!guard.accept(1, "removed", "review.branch", seq, true).accepted, "Review cannot replace the active game");
+        check(!guard.accept(1, "removed", "review.mode", seq, true).accepted, "Before/after toggle removed");
+        for(String type:new String[]{"archive.open","nav.history","settings.feedback","settings.preview","puzzle.undo"}) {
+            check(guard.accept(1,type,type,seq++,true).accepted,type+" allowlisted");
+            check(!BridgeGuard.requiresActiveMatch(type),type+" independent from current match");
+        }
+        check(!BridgeGuard.matchesActiveSession("live","archive:live",true),"Archived controls cannot mutate live game");
     }
 }

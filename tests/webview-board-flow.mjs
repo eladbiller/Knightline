@@ -13,6 +13,9 @@ const args = process.argv.slice(2);
 const probe = args.includes('--probe');
 const mode = args.find(a => a.startsWith('--mode='))?.split('=')[1] || 'bot';
 const record = args.find(a => a.startsWith('--record='))?.slice(9);
+// Optional human-paced recordings; assertions and native responses are unchanged.
+const actionDelayMs = Number(process.env.QA_ACTION_DELAY_MS || 180);
+assert(Number.isFinite(actionDelayMs) && actionDelayMs >= 0 && actionDelayMs <= 2000);
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 const adb = (...a) => execFileSync(adbPath, ['-s', serial, ...a], {encoding: 'utf8'}).trim();
 
@@ -82,7 +85,7 @@ async function touch(selector, scroll = false) {
   await cdp.call('Input.dispatchTouchEvent', {type:'touchStart',touchPoints:[{...p,id:1}]});
   await delay(65);
   await cdp.call('Input.dispatchTouchEvent', {type:'touchEnd',touchPoints:[]});
-  await delay(180);
+  await delay(actionDelayMs);
 }
 async function drag(from, to) {
   const a = await point(sq(from)), b = await point(sq(to));
