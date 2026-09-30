@@ -9,8 +9,8 @@ The interface is packaged inside the APK and served through Android's `WebViewAs
 - Complete native chess rules: legal move validation, castling, en passant, promotion, checkmate, stalemate, threefold repetition, and the 50-move rule.
 - Bundled Stockfish 16 NNUE for arm64-v8a, armeabi-v7a, and x86_64; Easy, Medium, and Hard bot levels; live numeric evaluation; and post-game review.
 - Offline bot games, pass-and-play, saved/resumed games, clocks, promotion, takebacks, and review branching.
-- Board-first game and review workspaces: essential controls fit the viewport. Review includes highlights, real engine move-quality titles, a scored graph, key moments, and isolated retry practice.
-- Six original offline mate-in-one puzzles with progressive hints, legal-move feedback, retry, Black-side positions, and native-stored completion. Puzzle practice never replaces the saved match.
+- Board-first game and review workspaces: essential controls fit the viewport. Review shows the played move in its grade color; Show best is optional. Explore any legal continuation for both sides, with live Stockfish scores, Undo, fixed orientation, player-labeled highlights and filters. The saved match stays unchanged.
+- 256 offline puzzles: six original warm-ups and 250 multi-move Lichess CC0 positions across five difficulty bands, from 800–1199 through 2400+. Progressive hints, native opponent replies, promotion, missed-puzzle practice, and separate unassisted/assisted progress. Puzzle practice never replaces the saved match.
 - Progressive coaching for bot play and guided lessons: concept, piece, move arrow, then Hide hint. Hint use clearly changes a game to Practice.
 - Native-stored Private Skill Rating: starts at 800; K=32 for the first 20 rated games then K=20; local history/deltas; bot anchors 600/1200/1800. It never claims a global ranking or leaderboard.
 - Knightline-only Bluetooth rooms and private PeerJS/WebRTC rooms, with native move validation and local chat.
@@ -40,7 +40,7 @@ Keep release-signing files outside the repository; `.gitignore` excludes keystor
 
 ## Validation status
 
-See [v0.3 flow validation](docs/validation-v0.3.0.md) for the current changes and limits. The native CLI suites pass 36,020 checks in total, including legacy core rules, tutor, timeline, bot, puzzle/review isolation, bridge, and rating checks. These are real Java `main` test runs, not an empty Gradle/JUnit result.
+See [v0.4 flow validation](docs/validation-v0.4.0.md) for the current changes and limits. The native CLI suites pass 41,016 checks in total, including legal replay of every packaged puzzle, free review analysis, bridge and rating checks. Another 75 JavaScript assertions cover evaluation-rail orientation and White-perspective scores. These are real test runs, not an empty Gradle/JUnit result.
 
 Prior beta Pixel coverage includes:
 
@@ -62,3 +62,9 @@ Version 0.2.0 incorrectly replaced the board/evaluation layout when selecting a 
 ## Stockfish licensing
 
 Stockfish is GPLv3-or-later. Its source and notices are retained in `third_party/stockfish`; binary notices and the NNUE network are packaged in `app/src/main/assets/stockfish`. Knightline's source release must retain those materials.
+
+## Puzzle data
+
+The 250 additional puzzles come from the [Lichess open puzzle database](https://database.lichess.org/#puzzles), released under CC0. Ratings are puzzle difficulty estimates, not Knightline player ratings. IDs, full solution lines, themes, source games and attribution are bundled in `app/src/main/assets/puzzles`. All gameplay is offline.
+
+`tools/import-puzzles.mjs` accepts a local `.zst` archive (or bounded prefix) with Node 24+, and selects 50 positions per difficulty band using the criteria in `NOTICE.txt`. `tests/com/traillink/AdvancedLearningTest.java` checks every imported solution through native chess legality. `tests/webview-analysis-flow.mjs` tests the installed APK through touch input; it is destructive only to the emulator's test match and must not be run against personal saved games. The older workspace flow remains a v0.3 historical test; its review and puzzle selectors are superseded by the analysis flow.

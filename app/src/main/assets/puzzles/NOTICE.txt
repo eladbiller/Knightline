@@ -1,0 +1,21 @@
+Knightline offline puzzle pack
+
+250 rated positions from the Lichess open puzzle database.
+Source: https://database.lichess.org/#puzzles
+Archive: https://database.lichess.org/lichess_db_puzzle.csv.zst
+Retrieved 2026-09-29; archive Last-Modified 2026-09-09.
+License: Creative Commons CC0 1.0 Universal (public-domain dedication).
+https://creativecommons.org/publicdomain/zero/1.0/
+
+Lichess permits downloading, modifying, and redistributing its database exports.
+The pack includes original puzzle IDs, ratings, theme tags, source game URLs,
+FEN positions and complete UCI solution lines. No runtime connection is needed.
+Ratings describe puzzle difficulty on Lichess, not a Knightline player rating.
+The first move of each stored line is the opponent's setup move; the second is
+the first player move. All packaged lines are replayed through native chess
+legality tests. The six original Knightline warm-ups remain separately defined.
+
+Import: tools/import-puzzles.mjs. 50 positions in each range 800-1199,
+1200-1599, 1600-1999, 2000-2399 and 2400-3000. At least two player moves per
+new puzzle; popularity >=85, >=1000 plays, rating deviation <=90. Motif quotas
+prevent one tactical pattern dominating a difficulty band.

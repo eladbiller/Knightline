@@ -76,10 +76,20 @@ public final class KnightlineActivity extends ChessLinkActivity {
     private boolean usedTakeback;
     private boolean usedReviewBranch;
     private SkillRatingStore privateRating;
-    private ChessPuzzles puzzle;
+    private PuzzleCatalog puzzleCatalog;
+    private PuzzleSession puzzle;
     private String puzzleToken = "";
-    private ChessReviewPractice reviewPractice;
-    private String reviewPracticeToken = "";
+    private String puzzleCollection = "all";
+    private ChessReviewWorkspace reviewWorkspace;
+    private String reviewToken = "";
+    private int reviewWorkspaceIndex = -1, reviewOrientation;
+    private String reviewWorkspaceSession = "";
+    private boolean reviewShowBest;
+    private volatile long reviewSearchGeneration;
+    private volatile StockfishEngine reviewEngine;
+    private final java.util.concurrent.ExecutorService reviewWorker = java.util.concurrent.Executors.newSingleThreadExecutor();
+    private StockfishEngine.Coach reviewEvaluation;
+    private String reviewEvaluationState = "Analyzing…";
 
     @Override public void onCreate(Bundle bundle) {
         // MainActivity restores its native save and calls the virtual home().
@@ -89,6 +99,12 @@ public final class KnightlineActivity extends ChessLinkActivity {
         ratingOutcomeSession = getSharedPreferences("knightline-rating-session", MODE_PRIVATE)
                 .getString("completed", "");
         restoreSessionIntegrityState();
+        try (java.io.Reader input = new java.io.InputStreamReader(getAssets().open("puzzles/lichess-pack.tsv"), StandardCharsets.UTF_8)) {
+            puzzleCatalog = new PuzzleCatalog(input);
+        } catch (Exception error) { throw new IllegalStateException("Packaged puzzle catalog is invalid", error); }
+        // Prepare the shared NNUE once; review uses a separate process so a long
+        // post-game report cannot block interactive exploration.
+        worker.execute(() -> { try { getStockfish(); } catch (Exception ignored) { } });
         createLocalWebView();
     }
 
@@ -194,17 +210,9 @@ public final class KnightlineActivity extends ChessLinkActivity {
         content.setGravity(Gravity.CENTER_HORIZONTAL);
         content.setPadding(dp(28), dp(26), dp(28), dp(28));
 
-        TextView mark = new TextView(this);
-        mark.setText("♞");
-        mark.setGravity(Gravity.CENTER);
-        mark.setTextColor(Color.rgb(248, 242, 229));
-        mark.setTextSize(36);
-        mark.setTypeface(Typeface.create("sans-serif", Typeface.BOLD));
-        android.graphics.drawable.GradientDrawable markBackground = new android.graphics.drawable.GradientDrawable();
-        markBackground.setShape(android.graphics.drawable.GradientDrawable.OVAL);
-        markBackground.setColor(Color.rgb(21, 41, 76));
-        markBackground.setStroke(dp(1), Color.rgb(104, 145, 222));
-        mark.setBackground(markBackground);
+        android.widget.ImageView mark = new android.widget.ImageView(this);
+        mark.setImageResource(com.eladbiller.knightline.R.drawable.icon);
+        mark.setContentDescription("Knightline knight");
         content.addView(mark, new LinearLayout.LayoutParams(dp(72), dp(72)));
 
         TextView title = new TextView(this);
@@ -329,10 +337,13 @@ public final class KnightlineActivity extends ChessLinkActivity {
             notice("Review unlocks after the first move is saved.", false);
             return;
         }
+        boolean entering = !"review".equals(requestedScreen);
+        if (entering) { reviewOrientation = me; reviewMode = 1; resetReviewWorkspace(); }
         reviewing = true;
         inGame = true;
         gameScreen = false;
         requestedScreen = "review";
+        ensureReviewWorkspace();
         publishState();
     }
 
@@ -502,6 +513,9 @@ public final class KnightlineActivity extends ChessLinkActivity {
     }
 
     @Override protected void onDestroy() {
+        reviewSearchGeneration++;
+        reviewWorker.shutdownNow();
+        if (reviewEngine != null) reviewEngine.close();
         if (messagePort != null) {
             try { messagePort.close(); } catch (Exception ignored) { }
             messagePort = null;
@@ -547,7 +561,6 @@ public final class KnightlineActivity extends ChessLinkActivity {
     }
 
     private void handleCommand(String type, JSONObject payload) {
-        if (type.startsWith("review.") && !"review.retry".equals(type) && !"review.try".equals(type)) reviewPractice = null;
         switch (type) {
             case "nav.home": home(); return;
             case "nav.play": requestedScreen = "play"; publishState(); return;
@@ -564,7 +577,7 @@ public final class KnightlineActivity extends ChessLinkActivity {
             case "match.startPass": startPassFromPayload(payload); return;
             case "match.resume": requestedScreen = "game"; if (local || host) showSnapshot(); else renderGame(); return;
             case "learn.start": beginLesson(payload); return;
-            case "puzzle.start": startPuzzle(payload.optInt("index", -1)); return;
+            case "puzzle.start": puzzleCollection = payload.optString("collection", "all"); startPuzzle(payload.optInt("index", -1)); return;
             case "puzzle.move":
             case "puzzle.hint":
             case "puzzle.retry":
@@ -581,31 +594,32 @@ public final class KnightlineActivity extends ChessLinkActivity {
             case "match.clear": requestClearSaved(); return;
             case "match.inviteRemote":
             case "match.suggestRemote": inviteRemoteChess(payload); return;
-            case "review.open": reviewIndex = Math.max(1, reviewTotal() - 1); reviewMode = 0; review(); return;
-            case "review.previous": if (reviewIndex > 1) { reviewIndex--; review(); } return;
-            case "review.next": if (reviewIndex < reviewTotal() - 1) { reviewIndex++; review(); } return;
-            case "review.mode": reviewMode = clamp(payload.optInt("mode", 0), 0, 2); review(); return;
+            case "review.open": reviewIndex = Math.max(1, reviewTotal() - 1); reviewMode = 1; resetReviewWorkspace(); review(); return;
+            case "review.previous": if (reviewIndex > 1) { reviewIndex--; reviewMode = 1; resetReviewWorkspace(); review(); } return;
+            case "review.next": if (reviewIndex < reviewTotal() - 1) { reviewIndex++; reviewMode = 1; resetReviewWorkspace(); review(); } return;
+            case "review.mode": reviewMode = clamp(payload.optInt("mode", 1), 0, 1); resetReviewWorkspace(); review(); return;
             case "review.jump":
                 int target = payload.optInt("index", -1);
                 if (target < 1 || target >= reviewTotal()) { reject("That move is not in this game."); return; }
-                reviewIndex = target; review(); return;
+                reviewIndex = target; reviewMode = 1; resetReviewWorkspace(); review(); return;
             case "review.branch": continueReview(); return;
-            case "review.retry":
-                int ply = reviewIndex - 1;
-                if (!"review".equals(requestedScreen) || !(local || host) || game == null || game.winner < 0
-                        || ply < 0 || ply >= game.analysisBest.size() || game.analysisBest.get(ply) == null) {
-                    reject("Wait for Stockfish to finish this move."); return;
-                }
-                reviewPractice = new ChessReviewPractice(ChessAnalysis.position(game, ply), game.analysisBest.get(ply));
-                reviewPracticeToken = UUID.randomUUID().toString();
-                reviewMode = 0; publishState(); return;
-            case "review.try":
-                if (!"review".equals(requestedScreen) || reviewPractice == null
-                        || !reviewPracticeToken.equals(payload.optString("token", ""))
-                        || payload.optInt("index", -1) != reviewIndex) { reject("That review position has changed."); publishState(); return; }
-                reviewPractice.play(payload.optInt("from", -1), payload.optInt("to", -1), payload.optInt("promotion", 5));
+            case "review.best":
+                if (!"review".equals(requestedScreen)) return;
+                if (reviewWorkspace != null && reviewWorkspace.length() > 0) reviewShowBest = !reviewShowBest;
+                else { boolean show = !reviewShowBest; reviewMode = show ? 0 : 1; resetReviewWorkspace(); ensureReviewWorkspace(); reviewShowBest = show; }
                 publishState(); return;
-            case "review.cancelRetry": publishState(); return;
+            case "review.evaluate": scheduleReviewEvaluation(); publishState(); return;
+            case "review.undo":
+                if (!validReviewPosition(payload)) return;
+                if (reviewWorkspace.undo()) { reviewShowBest = false; scheduleReviewEvaluation(); }
+                publishState(); return;
+            case "review.reset": reviewMode = 1; resetReviewWorkspace(); review(); return;
+            case "review.try":
+                if (!validReviewPosition(payload)) return;
+                if (reviewWorkspace.play(payload.optInt("from", -1), payload.optInt("to", -1), payload.optInt("promotion", 5))) {
+                    reviewShowBest = false; scheduleReviewEvaluation();
+                } else reject("Choose a legal move for the side to move.");
+                publishState(); return;
             case "transport.host": startBluetooth(true); return;
             case "transport.join": startBluetooth(false); return;
             case "transport.scan": scan(); return;
@@ -619,6 +633,85 @@ public final class KnightlineActivity extends ChessLinkActivity {
             case "engine.info": engineInformation(); return;
             default: reject("That control is not available in this version.");
         }
+    }
+
+    private void resetReviewWorkspace() {
+        reviewWorkspace = null; reviewWorkspaceIndex = -1; reviewToken = "";
+        reviewShowBest = false; reviewEvaluation = null; reviewSearchGeneration++;
+    }
+
+    private Game reviewPosition(int ply) {
+        if (local || host) return ChessPosition.at(game, ply);
+        Game replay = new Game(0, 0);
+        for (int i = 1; i <= ply; i++) {
+            JSONArray m = reviewMoves.optJSONArray(i);
+            if (m == null || !replay.move(replay.turn, m.optInt(0, -1), m.optInt(1, -1), m.optInt(2, 5)))
+                throw new IllegalStateException("Review move history is incomplete");
+        }
+        JSONArray expected = reviewBoards.optJSONArray(ply);
+        if (expected == null) throw new IllegalStateException("Review position is not ready");
+        for (int i = 0; i < 64; i++) if (replay.b[i] != expected.optInt(i, 99))
+            throw new IllegalStateException("Review position does not match its move history");
+        return replay;
+    }
+
+    private void ensureReviewWorkspace() {
+        if (!"review".equals(requestedScreen) || !hasReview()) return;
+        reviewIndex = clamp(reviewIndex, 1, reviewTotal() - 1);
+        if (reviewWorkspace != null && reviewWorkspaceIndex == reviewIndex && session.equals(reviewWorkspaceSession)) return;
+        try {
+            reviewWorkspace = new ChessReviewWorkspace(reviewPosition(reviewMode == 1 ? reviewIndex : reviewIndex - 1), reviewOrientation);
+            reviewWorkspaceIndex = reviewIndex; reviewWorkspaceSession = session;
+            reviewToken = UUID.randomUUID().toString(); scheduleReviewEvaluation();
+        } catch (Exception error) {
+            reviewEvaluationState = "Waiting for complete move history";
+        }
+    }
+
+    private boolean validReviewPosition(JSONObject payload) {
+        if (!"review".equals(requestedScreen) || reviewWorkspace == null || !reviewToken.equals(payload.optString("token", ""))
+                || payload.optInt("index", -1) != reviewIndex || payload.optLong("positionSeq", -1) != reviewWorkspace.revision) {
+            reject("That analysis position changed. Please try again."); publishState(); return false;
+        }
+        return true;
+    }
+
+    private void scheduleReviewEvaluation() {
+        if (reviewWorkspace == null || destroyed) return;
+        final long generation = ++reviewSearchGeneration;
+        final String token = reviewToken;
+        final Game position = reviewWorkspace.position.copy();
+        reviewEvaluation = null; reviewEvaluationState = position.winner >= 0 ? "Final position" : "Analyzing…";
+        if (position.winner >= 0) return;
+        reviewWorker.execute(() -> {
+            if (destroyed || generation != reviewSearchGeneration) return;
+            StockfishEngine.Coach result = null;
+            try {
+                java.io.File net = new java.io.File(getFilesDir(), "nn-5af11540bbfe.nnue");
+                for (int n = 0; n < 100 && !net.isFile(); n++) {
+                    if (destroyed || generation != reviewSearchGeneration) return;
+                    Thread.sleep(100);
+                }
+                if (reviewEngine == null) reviewEngine = new StockfishEngine(new java.io.File(getApplicationInfo().nativeLibraryDir, "libstockfish.so"), net);
+                result = reviewEngine.coach(position, 0);
+            } catch (Exception error) { android.util.Log.w("Knightline", "Interactive review evaluation unavailable", error); }
+            final StockfishEngine.Coach value = result;
+            handler.post(() -> {
+                if (destroyed || generation != reviewSearchGeneration || !token.equals(reviewToken) || !"review".equals(requestedScreen)) return;
+                reviewEvaluation = value; reviewEvaluationState = value == null ? "Tap score to retry" : "Live · depth " + value.depth;
+                publishState();
+            });
+        });
+    }
+
+    private String reviewScore() {
+        if (reviewWorkspace == null) return "—";
+        int winner = reviewWorkspace.position.winner;
+        if (winner == 2) return "0.00";
+        if (winner >= 0) return winner == 0 ? "M0" : "−M0";
+        if (reviewEvaluation == null) return "…";
+        if (reviewEvaluation.whiteMate != null) return (reviewEvaluation.whiteMate >= 0 ? "M" : "−M") + Math.abs(reviewEvaluation.whiteMate);
+        return String.format(Locale.ROOT, "%+.2f", reviewEvaluation.whiteCentipawns / 100.0);
     }
 
     private void acceptConfirmation(String token) {
@@ -957,7 +1050,6 @@ public final class KnightlineActivity extends ChessLinkActivity {
                 position.put(reviewMode == 1 ? "lastA" : "playedFrom", played.optInt(0, -1));
                 position.put(reviewMode == 1 ? "lastZ" : "playedTo", played.optInt(1, -1));
             }
-            if (best != null && reviewMode != 1) { position.put("bestFrom", best.optInt(0, -1)); position.put("bestTo", best.optInt(1, -1)); }
         } catch (Exception ignored) { }
         JSONArray timeline = new JSONArray();
         String notation = "Move";
@@ -971,29 +1063,56 @@ public final class KnightlineActivity extends ChessLinkActivity {
             }
             if (san.isEmpty()) san = "Move " + index;
             timeline.put(obj("index", index, "notation", san, "verdict", text.verdict,
+                    "side", (index - 1) % 2, "player", reviewPlayer((index - 1) % 2),
                     "whiteScore", text.whiteScore == null ? JSONObject.NULL : text.whiteScore,
                     "whiteMate", text.whiteMate == null ? JSONObject.NULL : text.whiteMate));
             if (index == reviewIndex) notation = san;
         }
-        if (reviewPractice != null && "review".equals(requestedScreen)) {
+        boolean active = reviewWorkspace != null && "review".equals(requestedScreen);
+        boolean variation = active && reviewWorkspace.length() > 0;
+        if (active) {
             JSONArray legal = new JSONArray();
-            if (!reviewPractice.complete) for (int[] move : reviewPractice.position.legal()) legal.put(array(move));
-            position = obj("b", array(reviewPractice.position.b), "moves", legal,
-                    "lastA", reviewPractice.position.lastA, "lastZ", reviewPractice.position.lastZ);
+            Game shown = reviewWorkspace.position;
+            if (shown.winner < 0) for (int[] move : shown.legal()) legal.put(array(move));
+            position = obj("b", array(shown.b), "moves", legal, "turn", shown.turn, "winner", shown.winner,
+                    "seq", reviewWorkspace.revision);
+            try {
+                if (reviewShowBest) {
+                    int[] arrow = variation ? (reviewEvaluation == null ? null : reviewEvaluation.move)
+                            : best == null || best.length() < 2 ? null : new int[]{best.optInt(0, -1), best.optInt(1, -1)};
+                    if (arrow != null) { position.put("bestFrom", arrow[0]); position.put("bestTo", arrow[1]); }
+                } else if (variation) {
+                    position.put("playedFrom", shown.lastA); position.put("playedTo", shown.lastZ); position.put("arrowGrade", "pending");
+                } else if (played != null) {
+                    position.put("playedFrom", played.optInt(0, -1)); position.put("playedTo", played.optInt(1, -1));
+                    position.put("arrowGrade", presentation.verdict);
+                }
+            } catch (Exception ignored) { }
         }
-        return obj("available", true, "index", reviewIndex, "total", total - 1, "mode", reviewMode, "me", reviewPractice == null ? me : reviewPractice.side,
+        return obj("available", true, "index", reviewIndex, "total", total - 1, "mode", reviewMode, "me", reviewOrientation,
                 "position", position, "report", presentation.report, "reason", presentation.reason,
                 "playedScore", presentation.playedScore, "bestScore", presentation.bestScore,
                 "playedCompact", presentation.playedCompact, "bestCompact", presentation.bestCompact,
                 "notation", notation, "timeline", timeline, "analyzed", !report.isEmpty(), "verdict", presentation.verdict,
-                "retrying", reviewPractice != null, "retryComplete", reviewPractice != null && reviewPractice.complete,
-                "retryToken", reviewPracticeToken, "yourTurn", reviewPractice != null && !reviewPractice.complete,
-                "retryFeedback", reviewPractice == null ? "" : reviewPractice.feedback,
-                "canRetry", (local || host) && game != null && game.winner >= 0 && best != null && !report.isEmpty(),
+                "token", reviewToken, "yourTurn", active && reviewWorkspace.position.winner < 0,
+                "variation", variation, "variationLength", active ? reviewWorkspace.length() : 0,
+                "variationLine", active ? reviewWorkspace.line() : "", "showBest", reviewShowBest,
+                "canShowBest", variation ? reviewEvaluation != null : best != null && best.length() >= 2,
+                "evaluation", reviewScore(), "evaluationState", reviewEvaluationState,
+                "toMove", active ? reviewWorkspace.position.turn : ply % 2,
+                "player", reviewPlayer(ply % 2), "mySide", local && !solo ? -1 : me,
+                "whitePlayer", reviewPlayer(0), "blackPlayer", reviewPlayer(1),
                 "scoreSide", presentation.side,
                 "liveGame", game != null && game.winner < 0,
                 "canPrevious", reviewIndex > 1, "canNext", reviewIndex < total - 1,
                 "canBranch", local);
+    }
+
+    private String reviewPlayer(int side) {
+        String color = side == 0 ? "White" : "Black";
+        String name = local && !solo ? playerLabel(side) : side == me ? "You"
+                : solo ? (learnMode ? "Coach" : "Stockfish") : peer == null || peer.isEmpty() ? "Friend" : peer;
+        return name + " · " + color;
     }
 
     private JSONObject clockPayload() {
@@ -1024,16 +1143,19 @@ public final class KnightlineActivity extends ChessLinkActivity {
         }
         JSONArray puzzles = new JSONArray();
         android.content.SharedPreferences progress = getSharedPreferences("knightline-puzzles", MODE_PRIVATE);
-        for (int index = 0; index < ChessPuzzles.NAMES.length; index++) {
-            puzzles.put(obj("index", index, "name", ChessPuzzles.NAMES[index], "theme", ChessPuzzles.THEMES[index],
-                    "solved", progress.getBoolean("solved-" + index, false)));
+        if (puzzleCatalog != null) for (PuzzleCatalog.Entry entry : puzzleCatalog.entries) {
+            puzzles.put(obj("index", entry.index, "id", entry.id, "name", entry.name, "theme", entry.theme, "rating", entry.rating, "band", entry.band(),
+                    "solved", progress.getBoolean(entry.id + ".solved", entry.index < 6 && progress.getBoolean("solved-" + entry.index, false)),
+                    "clean", progress.getBoolean(entry.id + ".clean", false),
+                    "assisted", progress.getBoolean(entry.id + ".assisted", false),
+                    "missed", progress.getBoolean(entry.id + ".missed", false)));
         }
         return obj("items", lessons, "puzzles", puzzles);
     }
 
     private void startPuzzle(int index) {
-        if (index < 0 || index >= ChessPuzzles.NAMES.length) { reject("Unknown puzzle."); return; }
-        puzzle = new ChessPuzzles(index);
+        if (puzzleCatalog == null || index < 0 || index >= puzzleCatalog.entries.size()) { reject("Unknown puzzle."); return; }
+        puzzle = new PuzzleSession(puzzleCatalog.entries.get(index));
         puzzleToken = UUID.randomUUID().toString();
         requestedScreen = "puzzle"; reviewing = false; gameScreen = false; inGame = false;
         publishState();
@@ -1041,18 +1163,24 @@ public final class KnightlineActivity extends ChessLinkActivity {
 
     private void puzzleCommand(String type, JSONObject payload) {
         if (puzzle == null || !"puzzle".equals(requestedScreen) || !puzzleToken.equals(payload.optString("token"))
-                || payload.optInt("positionSeq", -1) != puzzle.position.seq) {
+                || payload.optLong("positionSeq", -1) != puzzle.revision) {
             reject("This puzzle position has changed."); publishState(); return;
         }
         switch (type) {
-            case "puzzle.retry": startPuzzle(puzzle.index); return;
-            case "puzzle.next": startPuzzle((puzzle.index + 1) % ChessPuzzles.NAMES.length); return;
+            case "puzzle.retry": startPuzzle(puzzle.entry.index); return;
+            case "puzzle.next": nextPuzzle(); return;
             case "puzzle.hint":
-                if (!puzzle.solved) { puzzle.hint = (puzzle.hint + 1) % 4; puzzle.usedHelp = true; }
+                puzzle.advanceHint(); persistPuzzleProgress();
                 break;
             case "puzzle.move":
-                if (puzzle.play(payload.optInt("from", -1), payload.optInt("to", -1), payload.optInt("promotion", 5))) {
-                    getSharedPreferences("knightline-puzzles", MODE_PRIVATE).edit().putBoolean("solved-" + puzzle.index, true).apply();
+                puzzle.play(payload.optInt("from", -1), payload.optInt("to", -1), payload.optInt("promotion", 5));
+                persistPuzzleProgress();
+                if (puzzle.pendingReply) {
+                    final PuzzleSession current = puzzle; final String token = puzzleToken; final long seq = puzzle.revision;
+                    handler.postDelayed(() -> {
+                        if (destroyed || puzzle != current || !token.equals(puzzleToken) || puzzle.revision != seq) return;
+                        puzzle.reply(); if ("puzzle".equals(requestedScreen)) publishState();
+                    }, 650);
                 }
                 break;
         }
@@ -1062,19 +1190,44 @@ public final class KnightlineActivity extends ChessLinkActivity {
     private JSONObject puzzlePayload() {
         if (puzzle == null) return obj("available", false);
         JSONArray moves = new JSONArray();
-        if (!puzzle.solved) for (int[] move : puzzle.position.legal()) moves.put(array(move));
+        if (!puzzle.solved && !puzzle.pendingReply) for (int[] move : puzzle.position.legal()) moves.put(array(move));
         JSONObject position = obj("b", array(puzzle.position.b), "moves", moves,
-                "seq", puzzle.position.seq, "lastA", puzzle.position.lastA, "lastZ", puzzle.position.lastZ);
+                "seq", puzzle.revision, "lastA", puzzle.position.lastA, "lastZ", puzzle.position.lastZ);
         int[] solution = puzzle.solution();
         if (solution != null && puzzle.hint >= 2) {
             try { position.put("bestFrom", solution[0]); if (puzzle.hint >= 3) position.put("bestTo", solution[1]); }
             catch (Exception ignored) { }
         }
-        String copy = puzzle.solved || puzzle.hint == 0 ? puzzle.feedback : ChessPuzzles.IDEAS[puzzle.index];
-        return obj("available", true, "index", puzzle.index, "token", puzzleToken, "name", ChessPuzzles.NAMES[puzzle.index],
-                "theme", ChessPuzzles.THEMES[puzzle.index], "position", position, "me", puzzle.side,
-                "yourTurn", !puzzle.solved, "solved", puzzle.solved, "attempts", puzzle.attempts, "hint", puzzle.hint,
-                "copy", copy, "total", ChessPuzzles.NAMES.length);
+        String copy = puzzle.solved || puzzle.hint == 0 ? puzzle.feedback : puzzle.hintText();
+        return obj("available", true, "index", puzzle.entry.index, "token", puzzleToken, "name", puzzle.entry.name,
+                "theme", puzzle.entry.theme, "rating", puzzle.entry.rating, "position", position, "me", puzzle.side,
+                "yourTurn", !puzzle.solved && !puzzle.pendingReply, "solved", puzzle.solved, "pendingReply", puzzle.pendingReply,
+                "attempts", puzzle.attempts, "hint", puzzle.hint, "steps", puzzle.playerMoves(), "completedSteps", puzzle.completedMoves(),
+                "copy", copy, "total", puzzleCatalog.entries.size(), "collection", puzzleCollection);
+    }
+
+    private void persistPuzzleProgress() {
+        String id = puzzle.entry.id;
+        android.content.SharedPreferences.Editor edit = getSharedPreferences("knightline-puzzles", MODE_PRIVATE).edit();
+        if (puzzle.missed || puzzle.usedHelp) edit.putBoolean(id + ".missed", true);
+        if (puzzle.solved) {
+            edit.putBoolean(id + ".solved", true);
+            if (puzzle.usedHelp) edit.putBoolean(id + ".assisted", true);
+            if (!puzzle.usedHelp && !puzzle.missed) edit.putBoolean(id + ".clean", true).putBoolean(id + ".missed", false);
+        }
+        edit.apply();
+    }
+
+    private void nextPuzzle() {
+        android.content.SharedPreferences progress = getSharedPreferences("knightline-puzzles", MODE_PRIVATE);
+        int total = puzzleCatalog.entries.size();
+        for (int offset = 1; offset <= total; offset++) {
+            PuzzleCatalog.Entry entry = puzzleCatalog.entries.get((puzzle.entry.index + offset) % total);
+            boolean eligible = puzzleCollection.equals("missed") ? progress.getBoolean(entry.id + ".missed", false)
+                    : puzzleCollection.equals("all") || puzzleCollection.equals(entry.band());
+            if (eligible) { startPuzzle(entry.index); return; }
+        }
+        requestedScreen = "learn"; notice("Collection complete. Choose your next challenge.", false); publishState();
     }
 
     private JSONObject transportPayload() {

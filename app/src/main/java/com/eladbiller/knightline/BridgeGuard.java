@@ -26,7 +26,7 @@ public final class BridgeGuard {
             "learn.start", "promotion.choose", "coach.advance",
             "puzzle.start", "puzzle.move", "puzzle.hint", "puzzle.retry", "puzzle.next",
             "review.open", "review.previous", "review.next", "review.mode", "review.branch", "review.jump",
-            "review.retry", "review.try", "review.cancelRetry",
+            "review.try", "review.best", "review.undo", "review.reset", "review.evaluate",
             "transport.host", "transport.join", "transport.scan", "transport.connect",
             "transport.disconnect", "transport.settings",
             "online.host", "online.join", "chat.open", "chat.send", "engine.info"

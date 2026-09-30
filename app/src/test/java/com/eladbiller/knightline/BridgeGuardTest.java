@@ -53,5 +53,14 @@ public final class BridgeGuardTest {
         guard.reset();
         check(guard.accept(1, "reload", "ui.ready", 1, false).accepted,
                 "A fresh page port may establish a new sequence stream");
+        long seq = 2;
+        for (String type : new String[]{"review.try", "review.best", "review.undo", "review.reset", "review.evaluate"}) {
+            check(BridgeGuard.requiresActiveMatch(type), type + " is bound to the saved match");
+            check(guard.accept(1, type, type, seq, true).accepted, type + " is allowlisted");
+            check(!guard.accept(1, type, type, seq, true).accepted, type + " rejects replays");
+            seq++;
+        }
+        check(!guard.accept(1, "removed", "review.retry", seq, true).accepted,
+                "Removed forced-best review control is not accepted");
     }
 }

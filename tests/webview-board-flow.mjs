@@ -184,6 +184,11 @@ try {
     await delay(500);
   }
   const black = await cdp.evaluate(`document.querySelector('[data-square]').dataset.square === '63'`);
+  if(mode!=='pass') {
+    const rail=await cdp.evaluate(`(()=>{const r=document.querySelector('.eval-rail'),f=r.querySelector('rect');return {top:r.dataset.topSide,y:+f.getAttribute('y'),height:+f.getAttribute('height')}})()`);
+    assert.equal(rail.top,black?'white':'black','Game evaluation rail follows board');
+    assert(Math.abs(rail.y-(black?0:100-rail.height))<.2,'Game White fill touches White side');
+  }
   const pawnA = black ? 12 : 52, pawnB = black ? 11 : 51, knight = black ? 6 : 62;
   const pawnTarget = black ? 28 : 36;
   await beginMeasure();
