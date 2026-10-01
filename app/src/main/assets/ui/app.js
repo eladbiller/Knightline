@@ -29,13 +29,17 @@
   let suppressNextBoardClick = false;
   let overlay = null;
   let overlayReturnFocus = null;
+  let pendingSheetReturn = null;
   let closingSheetTimer = 0;
   let renderedScreen = '';
+  let renderedView = '';
+  const scrollPositions = new Map();
   let movePending = false;
   let showReviewOverview = false;
   let reviewFilter = 'both';
   let puzzleFilter = 'warmup';
   let puzzlePage = 0;
+  let learnSection = 'puzzles';
 
   const clockNames = ['10 | 0', '5 | 0', '3 | 2', '1 | 0', 'Untimed'];
   const strengthNames = ['Easy', 'Medium', 'Hard'];
@@ -131,10 +135,14 @@
   }
 
   function stateEvent(event) {
+    app.inert = false;
+    app.dataset.ready = 'true';
+    app.setAttribute('aria-busy', 'false');
     const previousPosition=boardPositionKey();
     const payload = object(event.payload, {});
     applyFontScale(payload.fontScale);
     model.screen = payload.screen || model.screen;
+    model.backTarget = payload.backTarget || 'home';
     model.session = payload.session || '';
     model.transport = object(payload.transport, model.transport);
     model.profile = object(payload.profile, model.profile);
@@ -153,6 +161,7 @@
     if (!model.match && model.screen === 'game' || !model.review.available && model.screen === 'review') model.screen = 'home';
     if (selectedSquare != null && !canSelectFrom(selectedSquare)) selectedSquare = null;
     render();
+    if (overlay?.kind === 'feedback') patchFeedback();
     if (model.screen === 'review' && !model.review.liveGame && showReviewOverview) {
       showReviewOverview = false; openReviewOverview();
     } else if (overlay && overlay.kind === 'review-overview') {
@@ -191,7 +200,7 @@
     } else if (event.type === 'promotion') {
       openPromotion(payload);
     } else if (event.type === 'back') {
-      if (overlay) closeOverlay();
+      if (overlay) dismissOverlay();
       else send('nav.back', {}, false);
     }
   }
@@ -204,12 +213,12 @@
   });
 
   function render() {
-    // The main area intentionally owns scrolling while the header and navigation stay
-    // put.  A top-level destination must therefore begin at its top, but incremental
-    // state updates for the same destination (clocks, engine analysis, hints) must not
-    // steal the player's scroll position.
+    // Keep each tab/category's position when returning from a detail or another tab.
+    const view = model.screen === 'learn' ? 'learn:' + learnSection : model.screen;
+    const scroll = main.scrollTop;
+    if (renderedView) scrollPositions.set(renderedView, scroll);
     const screenChanged = renderedScreen !== model.screen;
-    if (screenChanged) { cancelBoardDrag(); selectedSquare = null; }
+    if (screenChanged) { cancelBoardDrag(); selectedSquare = null; pendingSheetReturn = null; if (overlay) closeOverlay(); }
     app.dataset.screen = model.screen;
     patchHeader();
     patchNavigation();
@@ -221,8 +230,9 @@
     else if (model.screen === 'review') renderReview();
     else if (model.screen === 'puzzle') renderPuzzle();
     else renderHome();
-    if (screenChanged) main.scrollTop = 0;
+    main.scrollTop = view !== renderedView ? scrollPositions.get(view) || 0 : scroll;
     renderedScreen = model.screen;
+    renderedView = view;
   }
 
   function patchHeader() {
@@ -237,12 +247,12 @@
       return;
     }
     if (model.screen === 'history') {
-      header.innerHTML = '<div class="header-brand"><button class="header-back" type="button" data-action="nav-home" aria-label="Back to Home">' + icon('back') + '</button><p class="brand-word">Game library</p></div><span class="header-status">Review only</span>';
+      header.innerHTML = '<div class="header-brand"><div class="brand-mark" aria-hidden="true">' + knightIcon() + '</div><p class="brand-word">Your games</p></div><span class="header-status">Review library</span>';
       return;
     }
     const focused = model.screen === 'game' || model.screen === 'review';
     header.innerHTML = focused
-      ? '<div class="header-brand"><button class="header-back" type="button" data-action="' + (model.screen === 'review' ? 'review-back' : 'nav-home') + '" aria-label="Back">' + icon('back') + '</button>' +
+      ? '<div class="header-brand"><button class="header-back" type="button" data-action="' + (model.screen === 'review' ? 'review-back' : 'game-back') + '" aria-label="Back to ' + escape({history:'Games',learn:'Learn',play:'Play',game:'game',home:'Home',profile:'Profile'}[model.backTarget] || 'Home') + '">' + icon('back') + '</button>' +
         '<div><p class="brand-word">' + (model.screen === 'review' ? 'Review' : 'Knightline') + '</p></div></div>' +
         (model.screen === 'review' ? '<button class="button button--compact" type="button" data-action="review-overview">' + icon('review') + 'Highlights</button>' : '<div class="header-status header-status--compact"><span class="status-dot ' + (connected ? '' : 'status-dot--idle') + '"></span><span>' + escape(connected ? 'Connected' : 'Saved') + '</span></div>')
       : '<div class="header-brand"><div class="brand-mark" aria-hidden="true">' + knightIcon() + '</div>' +
@@ -266,6 +276,7 @@
     const last = array(profile.history)[0];
     main.innerHTML =
       '<section class="screen screen--home">' +
+      (match ? resumeCard(match) : '') +
       '<article class="surface hero">' +
       '<div class="hero-grid"><div><p class="eyebrow">Your board. Your pace.</p>' +
       '<h1 class="title">Make the next move count.</h1>' +
@@ -277,13 +288,12 @@
       '<button class="button button--primary" type="button" data-action="nav-play">' + icon('bot') + ' Play now</button>' +
       '<button class="button button--quiet" type="button" data-action="nav-learn">Open learning</button>' +
       '</div></article>' +
-      (match ? resumeCard(match) : '') +
       roomStatusCard(match) +
       '<section class="quick-grid" aria-label="Ways to play">' +
       quickCard('bot', 'Play Stockfish', 'Offline bot, clocks and private skill', 'setup-bot') +
       quickCard('bluetooth', 'Nearby game', 'Bluetooth on two Knightline phones', 'transport-menu') +
       quickCard('room', 'Private room', 'Online peer-to-peer room code', 'online-menu') +
-      quickCard('learn', 'Learn an opening', 'Guided lines with progressive hints', 'nav-learn') +
+      quickCard('learn', 'Learn an opening', 'Guided lines with progressive hints', 'nav-openings') +
       '</section>' +
       '<button class="surface library-link" type="button" data-action="nav-history"><span class="quick-icon">' + icon('review') + '</span><span><strong>Game library</strong><small>' + array(model.archive.entries).length + ' saved · revisit your games</small></span><span aria-hidden="true">›</span></button></section>';
   }
@@ -335,6 +345,7 @@
       escape(transport.hosting ? 'Set up a game' : 'Suggest a game') + '</button></div></article>' : '';
     main.innerHTML =
       '<section class="screen"><div><p class="eyebrow">Play</p><h1 class="title">Choose your board.</h1><p class="subtitle">Every local game is ready without a sign-in.</p></div>' +
+      (model.match ? resumeCard(model.match) : '') +
       connectedRoom +
       '<article class="surface"><div class="section-heading"><div><h2 class="surface-title">Play Stockfish</h2><p class="subtitle">Choose a clock and a level. Hints turn it into Practice.</p></div></div>' +
       '<div class="hero-actions"><button class="button button--primary" type="button" data-action="setup-bot">Set up bot game</button></div></article>' +
@@ -358,19 +369,21 @@
     puzzlePage = Math.max(0, Math.min(puzzlePage, Math.ceil(filtered.length / 10) - 1));
     const visible = filtered.slice(puzzlePage * 10, puzzlePage * 10 + 10);
     main.innerHTML =
-      '<section class="screen"><div><p class="eyebrow">Learn</p><h1 class="title">Calculate further.</h1><p class="subtitle">Real combinations. Strong replies. Entirely offline.</p></div>' +
+      '<section class="screen"><div><p class="eyebrow">Learn</p><h1 class="title">Build your game.</h1><p class="subtitle">Tactics, opening plans and the art of finishing.</p></div>' +
+      '<nav class="learn-tabs" aria-label="Learning categories">' + [['puzzles','Puzzles'],['openings','Openings'],['endgames','Endgames']].map(([key,label])=>'<button type="button" data-learn-section="'+key+'" aria-pressed="'+(learnSection===key)+'">'+label+'</button>').join('')+'</nav>' +
+      (learnSection === 'puzzles' ?
       '<article class="surface puzzle-hero"><div class="section-heading"><div><p class="eyebrow">Your practice</p><h2 class="surface-title">' + solved + ' / ' + puzzles.length + ' solved</h2></div></div><div class="puzzle-progress-row"><span><strong>' + clean + '</strong> First try · no help</span><span><strong>' + assisted + '</strong> Practice / earlier solves</span></div><button class="button button--wide missed-collection" type="button" data-puzzle-filter="missed">' + icon('undo') + 'Practice again <span>' + missed + '</span></button><p class="tiny">Hints and mistakes stay recorded, even after a restart. Earlier-version solves are preserved as practice because their first-attempt history cannot be verified.</p></article>' +
       '<section class="difficulty-grid" aria-label="Puzzle difficulty">' + bands.map(([key,label,range])=>'<button class="difficulty-card" type="button" data-puzzle-filter="' + key + '" aria-pressed="' + (puzzleFilter === key) + '"><strong>' + label + '</strong><span>' + range + '</span><small>' + puzzles.filter(p=>p.band===key).length + ' puzzles</small></button>').join('') + '</section>' +
       '<article class="surface puzzle-library"><div class="section-heading"><h2 class="surface-title">' + (puzzleFilter === 'missed' ? 'Practice missed' : bands.find(b=>b[0]===puzzleFilter)?.[1] || 'Puzzles') + '</h2><span class="tiny">' + filtered.length + ' positions</span></div><div class="puzzle-pack">' + visible.map(p=>'<button class="puzzle-entry" type="button" data-puzzle="' + p.index + '"><span class="puzzle-number">' + (p.clean ? icon('check') : p.solved ? '◐' : String(p.index + 1).padStart(2,'0')) + '</span><span><strong>' + escape(p.name) + '</strong><small>' + (p.rating ? 'Difficulty ' + p.rating + ' · ' : '') + (p.clean ? 'Unassisted' : p.missed ? 'Needs practice' : p.solved ? 'Solved with help' : 'Unsolved') + '</small></span><span aria-hidden="true">›</span></button>').join('') + (filtered.length ? '' : '<p class="body-copy">Nothing to revisit yet. Choose a difficulty and start a puzzle.</p>') + '</div>' + (filtered.length > 10 ? '<div class="puzzle-pagination"><button class="button button--compact" type="button" data-puzzle-page="-1" ' + (puzzlePage===0?'disabled':'') + '>Previous</button><span>' + (puzzlePage+1) + ' / ' + Math.ceil(filtered.length/10) + '</span><button class="button button--compact" type="button" data-puzzle-page="1" ' + ((puzzlePage+1)*10>=filtered.length?'disabled':'') + '>Next</button></div>' : '') + '<p class="tiny">Puzzle difficulty is from Lichess, not your player rating. 250 CC0 positions plus six original warm-ups. Progress stays on this phone.</p></article>' +
-      '<div class="section-heading"><div><p class="eyebrow">Build your repertoire</p><h2 class="surface-title">Guided openings</h2></div></div>' +
+      '' : learnSection === 'openings' ? '<div class="section-heading"><div><p class="eyebrow">Build your repertoire</p><h2 class="surface-title">Guided openings</h2><p class="subtitle">Choose a line, then play it as White or Black.</p></div></div>' +
       '<section class="lesson-list" aria-label="Opening lessons">' +
       lessons.map((lesson) => '<button class="lesson-card" type="button" data-lesson="' + escape(lesson.id) + '">' +
         '<span class="lesson-icon" aria-hidden="true">✦</span><span class="lesson-content"><span class="lesson-title">' + escape(lesson.name) + '</span>' +
         '<span class="lesson-copy">' + escape(lesson.intro) + '</span></span><span class="progress-ring" data-label="' +
         escape(lesson.moves) + 'm" aria-label="' + escape(lesson.moves) + ' guided moves"></span></button>').join('') +
-      '</section></section>';
+      '</section>' : '') + '</section>';
     const endgames=array(model.lessons.endgames);
-    main.querySelector('.screen').insertAdjacentHTML('beforeend','<section class="endgame-library"><p class="eyebrow">Convert the advantage</p><h2 class="surface-title">Learn to finish.</h2><p class="subtitle">Mating methods, stalemate traps, and what your pieces can actually force against a lone king.</p><div class="lesson-list">' + endgames.map(l=>'<button class="lesson-card" type="button" data-endgame="'+l.id+'"><span class="lesson-icon" aria-hidden="true">'+icon('learn')+'</span><span class="lesson-content"><span class="lesson-title">'+escape(l.name)+'</span><span class="lesson-copy">'+escape(l.verdict)+'</span></span><span aria-hidden="true">›</span></button>').join('')+'</div></section>');
+    if(learnSection==='endgames') main.querySelector('.screen').insertAdjacentHTML('beforeend','<section class="endgame-library"><p class="eyebrow">Convert the advantage</p><h2 class="surface-title">Learn to finish.</h2><p class="subtitle">Mating methods, stalemate traps, and what your pieces can actually force against a lone king.</p><div class="lesson-list">' + endgames.map(l=>'<button class="lesson-card" type="button" data-endgame="'+l.id+'"><span class="lesson-icon" aria-hidden="true">'+icon('learn')+'</span><span class="lesson-content"><span class="lesson-title">'+escape(l.name)+'</span><span class="lesson-copy">'+escape(l.verdict)+'</span></span><span aria-hidden="true">›</span></button>').join('')+'</div></section>');
   }
 
   function openLesson(lesson,endgame=false) {
@@ -432,7 +445,7 @@
     main.innerHTML =
       '<section class="screen"><div><p class="eyebrow">Profile</p><h1 class="title">Your private skill.</h1><p class="subtitle">' +
       escape(profile.scope || 'Private skill rating · on this device') + '</p></div>' +
-      '<article class="surface feedback-settings"><div class="section-heading"><div><p class="eyebrow">Make it yours</p><h2 class="surface-title">Sound & vibration</h2></div></div>' + ['sound','vibration'].map(key => '<button class="setting-toggle" type="button" role="switch" aria-checked="' + !!model.settings[key] + '" data-feedback="' + key + '"><span><strong>' + (key==='sound'?'Game sounds':'Vibration') + '</strong><small>' + (key==='sound'?'Crisp board clicks and capture sounds':'Firm native feedback for board actions') + '</small></span><span class="switch-track" aria-hidden="true"><i></i></span></button>').join('') + '<p class="tiny" data-vibration-status>'+escape(model.settings.vibrationStatus || 'Your phone’s volume and system haptic settings still apply.')+'</p><button class="button button--compact" type="button" data-action="feedback-preview">Test feedback</button></article>' +
+      '<article class="surface feedback-settings"><div class="section-heading"><div><p class="eyebrow">Make it yours</p><h2 class="surface-title">Sound & vibration</h2></div></div>' + feedbackMarkup() + '</article>' +
       '<article class="surface hero"><div class="hero-grid"><div><p class="eyebrow">' + (profile.provisional ? 'Provisional estimate' : 'Established estimate') +
       '</p><h2 class="title">Keep playing clean games.</h2><p class="subtitle">Bot anchors are estimated: Easy 600, Medium 1200, Hard 1800.</p></div><div class="hero-rating"><span class="rating-number">' +
       escape(profile.rating || 800) + '</span><span class="rating-label">Private skill</span></div></div></article>' +
@@ -958,7 +971,7 @@
     const remote = overlay.mode === 'remote';
     const remoteHosting = !!object(model.transport, {}).hosting;
     const primaryLabel = bot ? 'Play' : remote ? (remoteHosting ? 'Send invite' : 'Suggest game') : 'Start game';
-    return '<div class="sheet-heading"><div><p class="eyebrow">' + (bot ? 'Offline bot' : remote ? 'Private room' : 'One device') + '</p><h2 id="sheet-title" class="sheet-title">' +
+    return '<div class="setup-content"><div class="sheet-heading"><div><p class="eyebrow">' + (bot ? 'Offline bot' : remote ? 'Private room' : 'One device') + '</p><h2 id="sheet-title" class="sheet-title">' +
       (bot ? 'Set up your game' : remote ? (remoteHosting ? 'Invite a friend' : 'Suggest a game') : 'Pass & play') + '</h2><p class="sheet-subtitle">' +
       (bot ? 'Choose a time and opponent. Hints make this a Practice game.' : remote ? 'Choose a clock. This sheet stays put while you decide.' : 'Hand the phone over after every move.') + '</p></div><button class="icon-button" type="button" data-sheet-close aria-label="Close">' + icon('close') + '</button></div>' +
       '<section class="sheet-section"><p class="sheet-label">Time control</p><div class="choice-grid" data-choice-group="clock">' +
@@ -966,7 +979,7 @@
       (bot ? '<section class="sheet-section"><p class="sheet-label">Opponent</p><div class="choice-grid" data-choice-group="level">' +
         strengthNames.map((name, index) => choiceButton('level', index, name, index === 0 ? 'Estimated 600' : index === 1 ? 'Estimated 1200' : 'Estimated 1800', overlay.level === index)).join('') +
         '</div></section>' : '') +
-      '<div class="sheet-footer"><button class="button button--quiet" type="button" data-sheet-close>Cancel</button><button class="button button--primary" type="button" data-setup-start>' +
+      '</div><div class="sheet-footer"><button class="button button--quiet" type="button" data-sheet-close>Cancel</button><button class="button button--primary" type="button" data-setup-start>' +
       primaryLabel + '</button></div>';
   }
 
@@ -1005,18 +1018,23 @@
 
   function showNativeOverlay(payload) {
     const kind = payload.kind || 'information';
+    const parent = pendingSheetReturn; pendingSheetReturn = null;
     if (kind === 'nearby') {
-      overlay = {kind: 'nearby'};
+      overlay = {kind: 'nearby', parent};
       openSheet('room');
       updateNearbySheet();
       return;
     }
-    overlay = {kind: kind, payload: payload};
+    // Chat/nearby updates retain their existing parent and do not reset scrolling.
+    const same = overlay?.kind === kind, previous = overlay;
+    const scroll = same ? sheetScroll.scrollTop : 0;
+    overlay = {kind: kind, payload: payload, parent: parent || (same ? previous.parent : null)};
     openSheet(kind === 'moves' ? 'moves' : 'room');
     if (kind === 'menu') sheetScroll.innerHTML = menuMarkup(payload);
     else if (kind === 'moves') sheetScroll.innerHTML = movesMarkup(payload);
     else if (kind === 'chat') sheetScroll.innerHTML = chatMarkup(payload);
     else sheetScroll.innerHTML = informationMarkup(payload);
+    sheetScroll.scrollTop = scroll;
   }
 
   function updateNearbySheet() {
@@ -1036,7 +1054,7 @@
     const choices = array(payload.choices);
     return '<div class="sheet-heading"><div><p class="eyebrow">Private controls</p><h2 id="sheet-title" class="sheet-title">' + escape(payload.title || 'Menu') +
       '</h2><p class="sheet-subtitle">' + escape(payload.subtitle || '') + '</p></div><button class="icon-button" type="button" data-sheet-close aria-label="Close">' + icon('close') + '</button></div>' +
-      '<section class="sheet-section">' + choices.map((choice) => '<button class="choice choice-row" type="button" data-native-action="' + escape(choice.id) +
+      '<section class="sheet-section"><button class="choice choice-row" type="button" data-action="feedback-settings"><span class="choice-row-icon">' + icon('settings') + '</span><span class="choice-row-copy"><span class="choice-main">Sound & vibration</span><span class="choice-detail">Adjust feedback without leaving your board</span></span><span aria-hidden="true">›</span></button>' + choices.map((choice) => '<button class="choice choice-row" type="button" data-native-action="' + escape(choice.id) +
         '" aria-pressed="false"><span class="choice-row-icon">' + icon(actionIcon(choice.id)) + '</span><span class="choice-row-copy"><span class="choice-main">' + escape(choice.title) + '</span><span class="choice-detail">' + escape(choice.detail) +
         '</span></span><span class="choice-row-chevron" aria-hidden="true">›</span></button>').join('') + '</section><div class="sheet-footer"><button class="button button--quiet" type="button" data-sheet-close>Done</button></div>';
   }
@@ -1074,7 +1092,8 @@
   }
 
   function openConfirmation(payload) {
-    overlay = {kind: 'confirm', token: payload.token || ''};
+    const parent = pendingSheetReturn || captureSheet(); pendingSheetReturn = null;
+    overlay = {kind: 'confirm', token: payload.token || '', parent};
     openSheet('room');
     sheetScroll.innerHTML = '<div class="sheet-heading"><div><p class="eyebrow">Confirm action</p><h2 id="sheet-title" class="sheet-title">' +
       escape(payload.title || 'Continue?') + '</h2><p class="sheet-subtitle">' + escape(payload.subtitle || '') + '</p></div></div>' +
@@ -1104,6 +1123,7 @@
     sheet.dataset.sheetKind = kind || 'room';
     sheet.dataset.open = 'true';
     sheet.setAttribute('aria-hidden', 'false');
+    sheetScroll.scrollTop = 0;
     backdrop.hidden = false;
     requestAnimationFrame(() => {
       backdrop.classList.add('is-visible');
@@ -1113,6 +1133,49 @@
       if (firstControl && typeof firstControl.focus === 'function') firstControl.focus({preventScroll: true});
       else sheet.focus({preventScroll: true});
     });
+  }
+
+  function captureSheet() {
+    return overlay ? {state: overlay, kind: sheet.dataset.sheetKind, html: sheetScroll.innerHTML, scroll: sheetScroll.scrollTop,
+      contentScroll: sheetScroll.querySelector('.setup-content')?.scrollTop || 0,
+      inputs: Array.from(sheetScroll.querySelectorAll('input,textarea'),e=>e.value)} : null;
+  }
+
+  function overlayAction(type, payload, needsSession) {
+    // Keep the same sheet open across the bridge round-trip. A confirmation is
+    // a child of the setup/menu, not a new flow that discards the user's choices.
+    pendingSheetReturn = captureSheet();
+    send(type, payload || {}, needsSession);
+  }
+
+  function dismissOverlay() {
+    if (!overlay) return;
+    const current = overlay;
+    pendingSheetReturn = null;
+    if (current.kind === 'confirm') send('confirm.cancel', {token:current.token}, false);
+    if (current.parent) {
+      overlay = current.parent.state;
+      openSheet(current.parent.kind);
+      sheetScroll.innerHTML = current.parent.html;
+      sheetScroll.querySelectorAll('input,textarea').forEach((e,i)=>{e.value=current.parent.inputs[i] || '';});
+      sheetScroll.scrollTop = current.parent.scroll;
+      const options = sheetScroll.querySelector('.setup-content'); if(options) options.scrollTop = current.parent.contentScroll;
+    } else closeOverlay();
+  }
+
+  function feedbackMarkup() {
+    return ['sound','vibration'].map(key => '<button class="setting-toggle" type="button" role="switch" aria-checked="'+!!model.settings[key]+'" data-feedback="'+key+'"><span><strong>'+(key==='sound'?'Wooden board sounds':'Board vibration')+'</strong><small>'+(key==='sound'?'Natural placements and captures · media volume':'Game feedback, independent of touch settings')+'</small></span><span class="switch-track" aria-hidden="true"><i></i></span></button>').join('') +
+      '<p class="tiny" data-vibration-status>'+escape(model.settings.vibrationStatus || '')+'</p><div class="hero-actions"><button class="button button--compact" type="button" data-action="feedback-preview">Try a move</button><button class="button button--compact" type="button" data-action="feedback-capture">Try a capture</button></div>';
+  }
+
+  function openFeedback() {
+    const parent = captureSheet();
+    overlay = {kind:'feedback', parent}; openSheet('room');
+    sheetScroll.innerHTML = '<div class="sheet-heading"><h2 id="sheet-title" class="sheet-title">Sound & vibration</h2><button class="icon-button" type="button" data-sheet-close aria-label="Back to game menu">'+icon('back')+'</button></div>'+feedbackMarkup();
+  }
+
+  function patchFeedback() {
+    sheetScroll.querySelectorAll('[data-feedback]').forEach(e=>e.setAttribute('aria-checked', String(!!model.settings[e.dataset.feedback])));
   }
 
   function closeOverlay() {
@@ -1153,9 +1216,11 @@
       if (value === 'nav-home') go('home');
       else if (value === 'nav-play') go('play');
       else if (value === 'nav-learn') go('learn');
+      else if (value === 'nav-openings') { learnSection = 'openings'; go('learn'); }
       else if (value === 'nav-profile') go('profile');
       else if (value === 'nav-history') go('history');
-      else if (value === 'feedback-preview') send('settings.preview', {}, false);
+      else if (value === 'feedback-preview' || value === 'feedback-capture') send('settings.preview', {cue:value==='feedback-capture'?'capture':'move'}, false);
+      else if (value === 'feedback-settings') openFeedback();
       else if (value === 'setup-bot') openSetup('bot');
       else if (value === 'setup-pass') openSetup('pass');
       else if (value === 'transport-menu') openTransportMenu();
@@ -1169,7 +1234,7 @@
       else if (value === 'game-menu') send('match.openMenu');
       else if (value === 'rematch') send('match.rematch');
       else if (value === 'review-open') { showReviewOverview = true; send('review.open'); }
-      else if (value === 'review-back') send('nav.back', {}, false);
+      else if (value === 'review-back' || value === 'game-back') send('nav.back', {}, false);
       else if (value === 'review-prev') send('review.previous');
       else if (value === 'review-next') send('review.next');
       else if (value === 'review-overview') openReviewOverview();
@@ -1209,6 +1274,8 @@
     const filter = event.target.closest('[data-review-filter]');
     if(filter) { reviewFilter = filter.dataset.reviewFilter; const scroll = sheetScroll.scrollTop; sheetScroll.innerHTML = reviewOverviewMarkup(); sheetScroll.scrollTop = scroll; return; }
     const collection = event.target.closest('[data-puzzle-filter]');
+    const category = event.target.closest('[data-learn-section]');
+    if (category) { learnSection = category.dataset.learnSection; render(); return; }
     if(collection) { puzzleFilter = collection.dataset.puzzleFilter; puzzlePage=0; renderLearn(); main.querySelector('.puzzle-library')?.scrollIntoView({block:'start'}); return; }
     const puzzlePagination = event.target.closest('[data-puzzle-page]');
     if(puzzlePagination) { puzzlePage += Number(puzzlePagination.dataset.puzzlePage); renderLearn(); main.querySelector('.puzzle-library')?.scrollIntoView({block:'start'}); return; }
@@ -1232,7 +1299,7 @@
       sheet.querySelectorAll('[data-endgame-stage]').forEach(e=>e.setAttribute('aria-pressed',String((e.dataset.endgameStage==='pattern')===overlay.pattern)));return;
     }
     if(event.target.closest('[data-lesson-start]') && overlay?.kind==='lesson'){
-      const {lesson,side,endgame,pattern}=overlay;closeOverlay();send(endgame?'learn.endgame':'learn.start',{lesson:lesson.id,side,pattern},false);return;
+      const {lesson,side,endgame,pattern}=overlay;overlayAction(endgame?'learn.endgame':'learn.start',{lesson:lesson.id,side,pattern},false);return;
     }
     const puzzle = event.target.closest('[data-puzzle]');
     if (puzzle) { send('puzzle.start', {index: Number(puzzle.dataset.puzzle),collection:puzzleFilter}, false); return; }
@@ -1248,15 +1315,14 @@
       const type = overlay.mode === 'bot' ? 'match.startBot'
         : overlay.mode === 'remote' ? (object(model.transport, {}).hosting ? 'match.inviteRemote' : 'match.suggestRemote')
           : 'match.startPass';
-      closeOverlay();
-      send(type, payload, false);
+      overlayAction(type, payload, false);
       return;
     }
     const transportButton = event.target.closest('[data-transport]');
     if (transportButton) {
       const type = transportButton.dataset.transport;
-      if (type === 'host') { closeOverlay(); send('transport.host', {}, false); }
-      else if (type === 'join') { closeOverlay(); send('transport.join', {}, false); }
+      if (type === 'host') { pendingSheetReturn = captureSheet(); closeOverlay(); send('transport.host', {}, false); }
+      else if (type === 'join') { overlayAction('transport.join', {}, false); }
       else if (type === 'scan') send('transport.scan', {}, false);
       else if (type === 'settings') send('transport.settings', {}, false);
       return;
@@ -1271,18 +1337,22 @@
       const input = document.getElementById('room-code');
       const code = input ? input.value : '';
       const type = online.dataset.online === 'host' ? 'online.host' : 'online.join';
+      if (code.replace(/[^a-z0-9]/gi,'').length < 4) { toast('Use a room code with 4 to 8 letters or numbers.', true); input?.focus(); return; }
+      pendingSheetReturn = captureSheet();
       closeOverlay();
       send(type, {code: code}, false);
       return;
     }
     const nativeAction = event.target.closest('[data-native-action]');
     if (nativeAction) {
-      closeOverlay();
-      send(nativeAction.dataset.nativeAction);
+      const type = nativeAction.dataset.nativeAction;
+      if (['match.resign','match.clear','engine.info','chat.open'].includes(type)) overlayAction(type);
+      else { closeOverlay(); send(type); }
       return;
     }
     const confirmation = event.target.closest('[data-confirm]');
     if (confirmation) {
+      if (confirmation.dataset.confirm === 'cancel') { dismissOverlay(); return; }
       const type = confirmation.dataset.confirm === 'accept' ? 'confirm.accept' : 'confirm.cancel';
       const token = overlay && overlay.token || '';
       closeOverlay();
@@ -1302,12 +1372,12 @@
       return;
     }
     if (event.target.closest('[data-sheet-close]')) {
-      closeOverlay();
+      dismissOverlay();
     }
   });
 
   backdrop.addEventListener('click', () => {
-    if (overlay && overlay.kind !== 'confirm' && overlay.kind !== 'promotion') closeOverlay();
+    if (overlay && overlay.kind !== 'confirm' && overlay.kind !== 'promotion') dismissOverlay();
   });
 
   document.addEventListener('keydown', (event) => {
@@ -1318,9 +1388,9 @@
       return;
     }
     if (!overlay) return;
-    if (event.key === 'Escape' && overlay.kind !== 'confirm' && overlay.kind !== 'promotion') {
+    if (event.key === 'Escape' && overlay.kind !== 'promotion') {
       event.preventDefault();
-      closeOverlay();
+      dismissOverlay();
       return;
     }
     if (event.key !== 'Tab') return;
@@ -1359,5 +1429,7 @@
     });
   }
 
+  app.inert = true;
+  app.setAttribute('aria-busy', 'true');
   render();
 })();

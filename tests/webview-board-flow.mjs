@@ -104,8 +104,9 @@ async function drag(from, to) {
   assert.equal(await cdp.evaluate(`document.querySelectorAll('.drag-piece,.square--drag-source,.square--drop').length`),0,'Drop leaves no ghost');
 }
 async function startGame() {
-  if (await cdp.evaluate(`!!document.querySelector('[data-action="nav-home"]')`)) {
-    await touch('[data-action="nav-home"]');
+  if (await cdp.evaluate(`!!document.querySelector('[data-action="game-back"]')`)) {
+    await touch('[data-action="game-back"]');
+    await touch('[data-nav="home"]');
     await waitFor(`!!document.querySelector('[data-action="setup-bot"]')`, 'home');
   }
   if (mode === 'pass') {
@@ -113,6 +114,7 @@ async function startGame() {
     await touch('[data-action="setup-pass"]', true);
   } else if (mode === 'lesson') {
     await touch('[data-nav="learn"]');
+    await touch('[data-learn-section="openings"]', true);
     await touch('[data-lesson="0"]', true);
     await touch('[data-lesson-start]', true);
   } else await touch('[data-action="setup-bot"]', true);
@@ -184,7 +186,8 @@ try {
   }
   assert(page, 'Local UI WebView must be debuggable');
   await cdp.open(page.webSocketDebuggerUrl);
-  await waitFor(`!!document.querySelector('[data-action="setup-bot"], [data-action="nav-home"]')`, 'initial app surface');
+  await waitFor(`document.querySelector('#app')?.dataset.ready==='true'`, 'native bridge ready');
+  await waitFor(`!!document.querySelector('[data-action="setup-bot"], [data-action="game-back"]')`, 'initial app surface');
   // Native startup cover fades only after the first committed WebView frame.
   await delay(500);
   await startGame();

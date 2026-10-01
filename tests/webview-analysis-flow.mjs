@@ -41,6 +41,7 @@ async function connect() {
   ws=new WebSocket(page.webSocketDebuggerUrl);
   ws.addEventListener('message',({data})=>{const m=JSON.parse(data),p=pending.get(m.id);if(!p)return;clearTimeout(p.timeout);pending.delete(m.id);m.error?p.reject(Error(JSON.stringify(m.error))):p.resolve(m.result);});
   await new Promise((resolve,reject)=>{ws.onopen=resolve;ws.onerror=reject;});
+  await wait(`document.querySelector('#app')?.dataset.ready==='true'`,'native bridge ready');
 }
 async function wait(expression, label, timeout=25000) {
   const until=Date.now()+timeout;
@@ -49,6 +50,7 @@ async function wait(expression, label, timeout=25000) {
 }
 async function touch(selector, scroll=false) {
   await wait(`!!document.querySelector(${JSON.stringify(selector)}) && !document.querySelector(${JSON.stringify(selector)}).disabled`,selector);
+  await wait(`(()=>{const s=document.querySelector(${JSON.stringify(selector)}).closest('#bottom-sheet');return !s || s.dataset.open==='true' && !s.getAnimations().some(a=>a.playState==='running') && Math.abs(new DOMMatrixReadOnly(getComputedStyle(s).transform).m42)<.1})()`,'settled sheet for '+selector,5000);
   if(scroll) { await evaluate(`document.querySelector(${JSON.stringify(selector)}).scrollIntoView({block:'nearest'})`); await delay(160); }
   const p=await evaluate(`(()=>{const e=document.querySelector(${JSON.stringify(selector)}),r=e.getBoundingClientRect();if(e.disabled||!r.width||r.y<0||r.bottom>innerHeight+1)throw Error('Inaccessible ${selector}');return {x:r.x+r.width/2,y:r.y+r.height/2}})()`);
   await wait(`(()=>{const e=document.querySelector(${JSON.stringify(selector)}),hit=document.elementFromPoint(${p.x},${p.y});return e===hit||e.contains(hit)})()`,'uncovered control: '+selector,1500);
@@ -75,8 +77,20 @@ async function layout(label) {
 }
 async function beginFrameAudit() {
   await evaluate(`(()=>{
-    window.__flowAudit={frames:0,errors:[],last:null,running:true};
+    window.__flowAudit={frames:0,uiFrames:0,sheetFrames:0,errors:[],last:null,running:true};
     function frame(){const a=window.__flowAudit;if(!a.running)return;const board=document.querySelector('.board');
+      a.uiFrames++;
+      const sheet=document.querySelector('#bottom-sheet');
+      if(sheet.dataset.open==='true'){
+        a.sheetFrames++;const r=sheet.getBoundingClientRect();
+        if(Math.abs(r.x-(innerWidth-r.width)/2)>1)a.errors.push('Sideways sheet displacement');
+      }
+      for(const e of document.querySelectorAll('.learn-tabs button,.nav-item,.setting-toggle,.lesson-card,#sheet-scroll button')){
+        const box=e.getBoundingClientRect();if(!box.width||!box.height)continue;
+        const range=document.createRange();range.selectNodeContents(e);const text=range.getBoundingClientRect();
+        if(text.height>0&&text.bottom>box.bottom+2)a.errors.push('Navigation/sheet text clipped: '+e.textContent);
+        if(e.scrollWidth>e.clientWidth+2)a.errors.push('Control overflows horizontally: '+e.textContent);
+      }
       if(board){a.frames++;const r=board.getBoundingClientRect(),cells=[...board.querySelectorAll('.square')];
         if(Math.abs(r.width-r.height)>1||cells.length!==64||cells.some(e=>{const c=e.getBoundingClientRect();return Math.abs(c.width-c.height)>1}))a.errors.push('Unequal board cells');
         const scale=visualViewport?.scale||1;if(scale!==1)a.errors.push('Viewport zoom '+scale);
@@ -93,16 +107,16 @@ async function beginFrameAudit() {
   })()`);
 }
 async function endFrameAudit(){
-  const result=await evaluate(`(()=>{const a=window.__flowAudit;if(!a)return null;a.running=false;return {frames:a.frames,errors:[...new Set(a.errors)]}})()`);
+  const result=await evaluate(`(()=>{const a=window.__flowAudit;if(!a)return null;a.running=false;return {frames:a.frames,uiFrames:a.uiFrames,sheetFrames:a.sheetFrames,errors:[...new Set(a.errors)]}})()`);
   if(result){console.log('Continuous frame audit: '+JSON.stringify(result));assert.deepEqual(result.errors,[],'Flow geometry/text regression');}
 }
 async function home() {
-  if(await evaluate(`document.querySelector('#bottom-sheet').dataset.open==='true'`)){adb('shell','input','keyevent','4');await delay(400);}
-  for(let n=0;n<3;n++) {
+  for(let n=0;n<5 && await evaluate(`document.querySelector('#bottom-sheet').dataset.open==='true'`);n++){adb('shell','input','keyevent','4');await delay(400);}
+  for(let n=0;n<6;n++) {
     if(await evaluate(`document.querySelector('#app').dataset.screen==='home'`))return;
     if(await evaluate(`document.querySelector('#app').dataset.screen==='review'`)) await touch('[data-action="review-back"]');
     else if(await evaluate(`document.querySelector('#app').dataset.screen==='puzzle'`)) await touch('[data-action="nav-learn"]');
-    else if(await evaluate(`!!document.querySelector('[data-action="nav-home"]')`)) await touch('[data-action="nav-home"]');
+    else if(await evaluate(`!!document.querySelector('[data-action="game-back"]')`)) await touch('[data-action="game-back"]');
     else await touch('[data-nav="home"]');
   }
 }
@@ -211,9 +225,11 @@ async function reviewFlow() {
   await wait(`document.querySelector('.review-verdict').innerText==='Best move'`,'Next first exits variation');
   assert.equal(await evaluate(`document.querySelector('.review-ribbon [aria-current="step"]').dataset.reviewJump`),'4','Next skipped selected move');
   await touch('.review-ribbon [data-review-jump="1"]');
+  await wait(`document.querySelector('.review-ribbon [aria-current="step"]').dataset.reviewJump==='1'`,'first saved move selected');
   let keyIndex=1;
   while(!await evaluate(`document.querySelector('[data-action="review-key"]').disabled`)){
     await touch('[data-action="review-key"]');
+    await wait(`Number(document.querySelector('.review-ribbon [aria-current="step"]').dataset.reviewJump)!==${keyIndex}`,'next key native response',5000);
     const next=Number(await evaluate(`document.querySelector('.review-ribbon [aria-current="step"]').dataset.reviewJump`));
     assert(next>keyIndex,'Key move wrapped or failed to advance');keyIndex=next;
   }
@@ -276,13 +292,13 @@ async function puzzleFlow() {
   console.log('PASS: difficulty packs, missed/assisted/clean solves, complete multi-move replies, promotion, saved-game isolation');
 }
 async function persistenceFlow() {
-  await home();await touch('[data-nav="learn"]');await touch('[data-puzzle-filter="warmup"]',true);
+  await home();await touch('[data-nav="learn"]');await touch('[data-learn-section="puzzles"]',true);await touch('[data-puzzle-filter="warmup"]',true);
   await touch('[data-puzzle="1"]',true);await touch('[data-action="puzzle-hint"]');
   await touch('[data-action="nav-learn"]');await delay(350);
   ws.close();adb('shell','am','force-stop','com.eladbiller.knightline');
   adb('shell','am','start','-n','com.eladbiller.knightline/com.traillink.KnightlineActivity');
   await delay(1000);await connect();await wait(`!!document.querySelector('[data-nav="learn"]')`,'restart');
-  await touch('[data-nav="learn"]');await touch('[data-puzzle-filter="missed"]',true);
+  await touch('[data-nav="learn"]');await touch('[data-learn-section="puzzles"]',true);await touch('[data-puzzle-filter="missed"]',true);
   assert(await evaluate(`!!document.querySelector('[data-puzzle="1"]')`),'Missed puzzle lost on restart');
   await touch('[data-puzzle-filter="warmup"]',true);
   assert(!await evaluate(`document.querySelector('[data-puzzle="0"]').innerText.includes('Unassisted')`),'Restart erased failure history');
@@ -331,22 +347,22 @@ async function libraryFeedbackFlow() {
   await wait(`document.querySelector('#app').dataset.screen==='history' && !!document.querySelector('[data-archive-id]')`,'native library');
   const oldId=await evaluate(`[...document.querySelectorAll('[data-archive-id]')].find(e=>e.innerText.includes('4 plies')&&e.innerText.includes('0–1'))?.dataset.archiveId`);
   assert(oldId,'Completed test game not archived');
-  await touch('[data-action="nav-home"]');await touch('[data-nav="play"]');await touch('[data-action="setup-pass"]',true);
+  await home();await touch('[data-nav="play"]');await touch('[data-action="setup-pass"]',true);
   await touch('[data-choice="clock"][data-value="4"]',true);await touch('[data-setup-start]',true);
   await wait(`document.querySelector('#app').dataset.screen==='game' || !!document.querySelector('[data-confirm="accept"]')`,'start or replacement confirmation');
   if(await evaluate(`!!document.querySelector('[data-confirm="accept"]')`))await touch('[data-confirm="accept"]',true);
   await wait(`document.querySelector('#app').dataset.screen==='game'`,'new active game');await move(53,45);
-  await touch('[data-action="nav-home"]');await touch('[data-action="nav-history"]',true);
+  await home();await touch('[data-action="nav-history"]',true);
   const count=await evaluate(`document.querySelectorAll('[data-archive-id]').length`);
   await touch(`[data-archive-id="${oldId}"]`,true);
   await wait(`document.querySelector('#bottom-sheet').dataset.sheetKind==='review-overview'`,'archived highlights');
   adb('shell','input','keyevent','4');await wait(`document.querySelector('#sheet-backdrop').hidden`,'highlights dismissed');
   assert(await evaluate(`document.querySelector('.review-counter').innerText.includes('4 moves')`),'Opened wrong archived game');
   await move(52,36);await move(12,28);await evaluated();await layout('archived alternate line');
-  await touch('[data-action="review-back"]');await wait(`document.querySelector('#app').dataset.screen==='home'`,'archive Back exits Home');
+  await touch('[data-action="review-back"]');await wait(`document.querySelector('#app').dataset.screen==='history'`,'archive Back returns Games');await home();
   await touch('[data-action="resume"]',true);await wait(`document.querySelector('#app').dataset.screen==='game'`,'active game resumes');
   assert(await evaluate(`document.querySelector('[data-square="45"]').getAttribute('aria-label').includes('pawn')&&document.querySelector('[data-square="52"]').getAttribute('aria-label').includes('pawn')&&document.querySelector('[data-square="36"]').getAttribute('aria-label').includes('empty')`),'Archive changed active board');
-  await touch('[data-action="nav-home"]');await touch('[data-nav="profile"]');
+  await home();await touch('[data-nav="profile"]');
   for(const key of ['sound','vibration']) {
     if(await evaluate(`document.querySelector('[data-feedback="${key}"]').getAttribute('aria-checked')==='true'`))await touch(`[data-feedback="${key}"]`,true);
   }
@@ -362,7 +378,7 @@ async function libraryFeedbackFlow() {
   await touch('[data-nav="home"]');await touch('[data-action="nav-history"]',true);
   assert.equal(await evaluate(`document.querySelectorAll('[data-archive-id]').length`),count,'Library changed across restart');
   await screenshot('knightline-v05-library');
-  await touch('[data-action="nav-home"]');await touch('[data-action="resume"]',true);
+  await home();await touch('[data-action="resume"]',true);
   await touch('[data-action="game-menu"]');await touch('[data-native-action="match.clear"]',true);await touch('[data-confirm="accept"]',true);
   await wait(`document.querySelector('#app').dataset.screen==='home'`,'clear active save');
   assert.equal(await evaluate(`document.querySelectorAll('[data-action="resume"]').length`),0,'Active save not cleared');
@@ -370,11 +386,11 @@ async function libraryFeedbackFlow() {
   await wait(`document.querySelector('#app').dataset.screen==='review'`,'archive without active game');
   adb('shell','input','keyevent','4');await wait(`document.querySelector('#sheet-backdrop').hidden`,'overview closed');
   await move(52,36);await evaluated();await touch('[data-action="review-back"]');
-  await wait(`document.querySelector('#app').dataset.screen==='home'`,'review-only exit');
-  console.log('PASS: archive isolation, persisted library, independent feedback preferences, review without active save, Home exits');
+  await wait(`document.querySelector('#app').dataset.screen==='history'`,'review-only exit to Games');
+  console.log('PASS: archive isolation, persisted library, independent feedback preferences, review without active save, contextual Games exits');
 }
 async function startLessonUI(index,side,endgame=false,pattern=false){
-  await home();await touch('[data-nav="learn"]');await touch(`[data-${endgame?'endgame':'lesson'}="${index}"]`,true);
+  await home();await touch('[data-nav="learn"]');await touch(`[data-learn-section="${endgame?'endgames':'openings'}"]`,true);await touch(`[data-${endgame?'endgame':'lesson'}="${index}"]`,true);
   await wait(`document.querySelector('#bottom-sheet').dataset.sheetKind==='lesson' && !document.querySelector('#bottom-sheet').getAnimations().some(a=>a.playState==='running')`,'lesson sheet');
   const bounds=await evaluate(`document.querySelector('#bottom-sheet').getBoundingClientRect().toJSON()`);
   for(const choice of [1,0,side]){
@@ -413,7 +429,7 @@ async function lessonsFlow(){
     assert.equal(await evaluate(`document.querySelector('.game-name').innerText`),'You won','Mating pattern winner');
   }
   for(const index of [5,6]){
-    await home();await touch('[data-nav="learn"]');await touch(`[data-endgame="${index}"]`,true);
+    await home();await touch('[data-nav="learn"]');await touch('[data-learn-section="endgames"]',true);await touch(`[data-endgame="${index}"]`,true);
     assert.equal(await evaluate(`document.querySelectorAll('[data-lesson-start]').length`),0,'Impossible material offered an unwinnable challenge');
     assert(await evaluate(`document.querySelector('#sheet-scroll').innerText.includes('dead draw')`),'Dead position explanation missing');
     adb('shell','input','keyevent','4');await wait(`document.querySelector('#sheet-backdrop').hidden`,'close lesson');
@@ -464,25 +480,107 @@ async function feedbackFlow(){
   await home();await touch('[data-nav="profile"]');
   const original=adb('shell','settings','get','system','haptic_feedback_enabled');
   const events=()=>adb('shell','dumpsys','vibrator_manager').split('\n').filter(l=>l.includes('com.eladbiller.knightline')&&l.includes('|'));
+  const uid=adb('shell','cmd','package','list','packages','-U','com.eladbiller.knightline').match(/uid:(\d+)/)[1];
+  const audioEvents=()=>{
+    const lines=adb('shell','dumpsys','audio').split('\n');
+    const player=lines.filter(l=>l.includes('uid/pid:'+uid+'/')&&l.includes('type:android.media.SoundPool')).at(-1)?.match(/piid:(\d+)/)?.[1];
+    assert(player,'Knightline SoundPool not registered');
+    return lines.filter(l=>l.includes('player piid:'+player+' event:started'));
+  };
   try{
     adb('shell','settings','put','system','haptic_feedback_enabled','1');
     for(const key of ['sound','vibration'])if(await evaluate(`document.querySelector('[data-feedback="${key}"]').getAttribute('aria-checked')==='true'`))await touch(`[data-feedback="${key}"]`,true);
-    const disabled=events();await touch('[data-action="feedback-preview"]',true);await delay(300);
+    const disabled=events(),silent=audioEvents();await touch('[data-action="feedback-preview"]',true);await delay(300);
     assert.deepEqual(events(),disabled,'App-off haptic emitted vibration');
+    assert.deepEqual(audioEvents(),silent,'App-off sound emitted audio');
     await touch('[data-feedback="vibration"]',true);await touch('[data-action="feedback-preview"]',true);await delay(350);
     const enabled=events();assert.notDeepEqual(enabled,disabled,'No native vibration request');
-    assert(enabled.some(l=>l.includes('HEAVY_CLICK')&&l.includes('usage: TOUCH')),'Missing device-tuned touch effect');
+    assert(enabled.some(l=>l.includes('usage: MEDIA')&&l.includes('finished')),'Missing completed game-media effect');
     adb('shell','settings','put','system','haptic_feedback_enabled','0');
     await touch('[data-action="feedback-preview"]',true);await delay(300);
-    assert.deepEqual(events(),enabled,'System haptics off was bypassed');
-    assert(await evaluate(`document.querySelector('#toast-region').innerText.includes('Android settings')`),'System-off diagnostic missing');
-    await touch('[data-feedback="sound"]',true);
+    assert.notDeepEqual(events(),enabled,'Board feedback incorrectly depends on touch settings');
+    assert(events().filter(l=>!enabled.includes(l)).some(l=>l.includes('usage: MEDIA')&&l.includes('finished')),'Touch-off board vibration not completed');
+    assert(await evaluate(`document.querySelector('#toast-region').innerText.includes('touch feedback off')`),'System-off diagnostic missing');
+    await touch('[data-action="feedback-capture"]',true);await delay(350);
+    await touch('[data-feedback="vibration"]',true);const touchOff=events();await touch('[data-action="feedback-preview"]',true);await delay(250);
+    assert.deepEqual(events(),touchOff,'App vibration off ignored with touch settings off');
+    await touch('[data-feedback="vibration"]',true);await touch('[data-feedback="sound"]',true);
+    const beforeAudio=audioEvents();await touch('[data-action="feedback-preview"]',true);await touch('[data-action="feedback-capture"]',true);
+    assert.notDeepEqual(audioEvents(),beforeAudio,'Enabled move/capture sounds did not reach Android audio service');
     await restartApp();await touch('[data-nav="profile"]');
+    await wait(`!!document.querySelector('[data-feedback="vibration"]')`,'restored feedback settings');
     for(const key of ['sound','vibration'])assert.equal(await evaluate(`document.querySelector('[data-feedback="${key}"]').getAttribute('aria-checked')`),'true','Feedback preference lost');
-    assert(await evaluate(`document.querySelector('[data-vibration-status]').innerText.includes('Android settings')`),'Profile diagnostic missing');
-    console.log('PASS: native HEAVY_CLICK/TOUCH, app-off/system-off suppression, diagnostics and persisted independent switches');
+    assert(await evaluate(`document.querySelector('[data-vibration-status]').innerText.includes('touch feedback off')`),'Profile diagnostic missing');
+    console.log('PASS: completed MEDIA effects, touch-off game vibration, app-off suppression, capture preview and persisted switches');
   }finally{adb('shell','settings',original==='null'?'delete':'put','system','haptic_feedback_enabled',...(original==='null'?[]:[original]));}
   await home();
+}
+async function navigationFlow() {
+  const screen = name => wait(`document.querySelector('#app').dataset.screen===${JSON.stringify(name)}`,'screen '+name);
+  const back = async () => { adb('shell','input','keyevent','4');await delay(450); };
+  const closed = () => wait(`document.querySelector('#bottom-sheet').dataset.open==='false'`,'sheet closed');
+  const category = name => touch(`[data-learn-section="${name}"]`,true);
+  const checkNav = async () => {
+    const d=await evaluate(`[...document.querySelectorAll('.nav-item')].map(e=>({name:e.innerText,current:e.getAttribute('aria-current'),r:e.getBoundingClientRect().toJSON(),w:e.scrollWidth,c:e.clientWidth}))`);
+    assert.equal(d.length,5);assert.equal(d.filter(e=>e.current==='page').length,1);
+    assert(d.every(e=>e.r.width>=44 && e.r.height>=44 && e.w<=e.c+1),'Navigation label clipping or small target');
+  };
+  await home();await touch('[data-nav="play"]');await checkNav();
+  await touch('[data-action="setup-pass"]',true);await touch('[data-choice="clock"][data-value="4"]',true);await touch('[data-setup-start]',true);
+  await wait(`document.querySelector('#app').dataset.screen==='game'||!!document.querySelector('[data-confirm="accept"]')`,'test game start');
+  if(await evaluate(`!!document.querySelector('[data-confirm="accept"]')`))await touch('[data-confirm="accept"]',true);
+  await screen('game');await move(52,36);await move(12,28);
+  const board=await evaluate(`[...document.querySelectorAll('[data-square]')].map(e=>e.getAttribute('aria-label'))`);
+  await touch('[data-action="game-back"]');await screen('play');
+  await touch('[data-action="setup-bot"]',true);await touch('[data-choice="clock"][data-value="2"]',true);await touch('[data-choice="level"][data-value="2"]',true);
+  await touch('[data-setup-start]',true);await wait(`!!document.querySelector('[data-confirm="cancel"]')`,'replace confirmation');
+  await back();await wait(`!!document.querySelector('[data-setup-start]')`,'Back restores setup');
+  for(const key of ['clock','level'])assert.equal(await evaluate(`document.querySelector('[data-choice="${key}"][aria-pressed="true"]').dataset.value`),'2','Cancelled setup lost '+key);
+  await touch('[data-setup-start]',true);await touch('[data-confirm="cancel"]',true);
+  assert(await evaluate(`!!document.querySelector('[data-setup-start]')`),'Cancel did not restore setup');
+  await back();await closed();await touch('[data-action="online-menu"]',true);await touch('#room-code',true);
+  await wait(`document.activeElement?.id==='room-code'`,'room code keyboard focus');
+  adb('shell','input','text','AB');await wait(`document.querySelector('#room-code').value==='AB'`,'typed room code');await touch('[data-online="join"]',true);
+  assert.equal(await evaluate(`document.querySelector('#room-code').value`),'AB','Invalid code discarded room input');
+  adb('shell','input','text','CDEF');await wait(`document.querySelector('#room-code').value==='ABCDEF'`,'completed room code');
+  await touch('[data-online="join"]',true);await touch('[data-confirm="cancel"]',true);
+  assert.equal(await evaluate(`document.querySelector('#room-code').value`),'ABCDEF','Cancelled room lost code');
+  await back();if(await evaluate(`document.querySelector('#bottom-sheet').dataset.open==='true'`))await back();await closed();
+  await touch('[data-nav="home"]');await touch('[data-action="resume"]',true);await screen('game');
+  assert.deepEqual(await evaluate(`[...document.querySelectorAll('[data-square]')].map(e=>e.getAttribute('aria-label'))`),board,'Cancellation replaced saved game');
+  await touch('[data-action="game-menu"]');await touch('[data-action="feedback-settings"]',true);
+  await evaluate(`window.__feedbackBoard=document.querySelector('.board')`);
+  await touch('[data-feedback="sound"]',true);await touch('[data-feedback="sound"]',true);await touch('[data-action="feedback-capture"]',true);
+  assert(await evaluate(`window.__feedbackBoard===document.querySelector('.board')`),'Feedback remounted game board');
+  await back();await wait(`document.querySelector('#sheet-title').innerText==='Game menu'`,'feedback Back to menu');
+  await touch('[data-native-action="engine.info"]',true);await back();await wait(`document.querySelector('#sheet-title').innerText==='Game menu'`,'engine Back to menu');
+  await touch('[data-native-action="match.resign"]',true);await back();await wait(`document.querySelector('#sheet-title').innerText==='Game menu'`,'resign cancellation');
+  await back();await closed();await back();await screen('home');
+  await touch('[data-nav="learn"]');await category('openings');await checkNav();
+  await touch('[data-lesson="0"]',true);await touch('[data-lesson-side="1"]',true);await touch('[data-lesson-start]',true);await touch('[data-confirm="cancel"]',true);
+  assert.equal(await evaluate(`document.querySelector('[data-lesson-side="1"]').getAttribute('aria-pressed')`),'true','Cancelled lesson lost side');
+  await touch('[data-lesson-start]',true);await touch('[data-confirm="accept"]',true);await screen('game');
+  await wait(`document.querySelector('.game-name')?.innerText==='Your move'`,'Black opening ready');
+  await touch('[data-action="game-back"]');await screen('learn');
+  assert.equal(await evaluate(`document.querySelector('[data-learn-section][aria-pressed="true"]').dataset.learnSection`),'openings','Lesson did not return to openings');
+  await category('endgames');await touch('[data-endgame="0"]',true);await touch('[data-lesson-side="1"]',true);await touch('[data-endgame-stage="pattern"]',true);
+  await touch('[data-lesson-start]',true);await back();
+  assert.equal(await evaluate(`document.querySelector('[data-endgame-stage="pattern"]').getAttribute('aria-pressed')`),'true','Cancelled endgame lost stage');await back();await closed();
+  await category('puzzles');await touch('[data-puzzle-filter="foundation"]',true);await touch('[data-puzzle-page="1"]',true);
+  const puzzle=await evaluate(`document.querySelector('[data-puzzle]').dataset.puzzle`);
+  await touch(`[data-puzzle="${puzzle}"]`,true);await screen('puzzle');await back();await screen('learn');
+  assert.equal(await evaluate(`document.querySelector('[data-puzzle]').dataset.puzzle`),puzzle,'Puzzle page/filter lost');
+  const scroll=await evaluate(`document.querySelector('#main-content').scrollTop`);assert(scroll>50,'Puzzle list returned to top');
+  await touch('[data-nav="profile"]');await touch('[data-nav="learn"]');
+  assert(Math.abs(await evaluate(`document.querySelector('#main-content').scrollTop`)-scroll)<2,'Learn tab scroll lost');
+  await screenshot('knightline-v07-learn');await touch('[data-nav="history"]');await checkNav();
+  const saved=await evaluate(`[...document.querySelectorAll('[data-archive-id]')].at(-1).dataset.archiveId`);
+  await touch(`[data-archive-id="${saved}"]`,true);await screen('review');await back();await closed();await touch('[data-action="review-back"]');await screen('history');
+  assert(await evaluate(`document.querySelector('#main-content').scrollTop>0`),'Game library lost scroll');
+  await back();await screen('home');await back();
+  assert(!adb('shell','dumpsys','activity','activities').split('\n').some(l=>l.includes('topResumedActivity')&&l.includes('com.eladbiller.knightline')),'Home Back traps user in app');
+  adb('shell','am','start','-n','com.eladbiller.knightline/com.traillink.KnightlineActivity');await delay(700);await screen('home');
+  console.log('PASS: five clear destinations, contextual Back, setup/lesson cancellation, nested menu returns, puzzle/list scroll, archive return, Home exits');
 }
 async function dragProbe(from,to,{cancel=false,outside=false,hold=false}={}){
   const point=async n=>evaluate(`(()=>{const r=document.querySelector('[data-square="${n}"]').getBoundingClientRect();return {x:r.x+r.width/2,y:r.y+r.height/2}})()`);
@@ -532,7 +630,8 @@ try {
   if(mode==='interaction')await interactionFlow();
   if(mode==='lesson-persist')await lessonPersistenceFlow();
   if(mode==='feedback')await feedbackFlow();
+  if(mode==='navigation')await navigationFlow();
   if(!['persist','library'].includes(mode))await endFrameAudit();
-  console.log('PASS v0.6 flows at font '+adb('shell','settings','get','system','font_scale'));
+  console.log('PASS v0.7 flows at font '+adb('shell','settings','get','system','font_scale'));
 } catch(e) { console.error(e.stack);process.exitCode=1;if(ws?.readyState===1){console.error(await evaluate('document.body.innerText'));await screenshot('knightline-v04-failure');} }
 finally { if(recording){await recording;adb('pull','/sdcard/knightline-analysis-flow.mp4',record);}ws?.close(); }

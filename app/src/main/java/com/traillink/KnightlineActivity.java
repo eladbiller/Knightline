@@ -61,6 +61,7 @@ public final class KnightlineActivity extends ChessLinkActivity {
     private final BridgeGuard bridgeGuard = new BridgeGuard();
     private long revision;
     private String requestedScreen = "home";
+    private final AppNavigation navigation = new AppNavigation();
     private Runnable pendingConfirmation;
     private Runnable pendingConfirmationCancel;
     private String pendingConfirmationToken = "";
@@ -360,7 +361,10 @@ public final class KnightlineActivity extends ChessLinkActivity {
             return;
         }
         boolean entering = !"review".equals(requestedScreen);
-        if (entering) { reviewOrientation = archivedReview != null ? archivedReview.orientation : local && !solo ? 0 : me; reviewMode = 0; resetReviewWorkspace(); }
+        if (entering) {
+            navigation.enterReview(archivedReview != null, state != null && state.optInt("winner", -1) < 0 && !lessonComplete());
+            reviewOrientation = archivedReview != null ? archivedReview.orientation : local && !solo ? 0 : me; reviewMode = 0; resetReviewWorkspace();
+        }
         reviewing = true;
         inGame = true;
         gameScreen = false;
@@ -478,6 +482,7 @@ public final class KnightlineActivity extends ChessLinkActivity {
     }
 
     @Override void startGame(int id) {
+        navigation.enterGame(requestedScreen, pendingLessonSide >= 0);
         endgameLesson=pendingEndgame;
         endgamePattern=pendingEndgame>=0&&pendingEndgamePattern;
         leaveReview();
@@ -622,20 +627,21 @@ public final class KnightlineActivity extends ChessLinkActivity {
             case "settings.feedback":
                 if (!(payload.opt("enabled") instanceof Boolean)) { reject("Invalid feedback setting."); return; }
                 feedback.set(payload.optString("key"), payload.optBoolean("enabled")); publishState(); return;
-            case "settings.preview": feedback.play(webView, "move");
+            case "settings.preview": feedback.play(webView, payload.optString("cue", "move"));
                 notice(feedback.vibrationEnabled()?feedback.vibrationStatus():feedback.soundEnabled()?"Sound preview. Vibration is switched off in Profile.":"Sound and vibration are both switched off in Profile.",false); return;
             case "nav.back":
-                if ("puzzle".equals(requestedScreen)) { requestedScreen = "learn"; publishState(); return; }
-                if (reviewing && archivedReview == null && state != null && state.optInt("winner", -1) < 0 && !lessonComplete()) {
-                    leaveReview(); requestedScreen = "game"; renderGame();
-                } else home();
-                publishState(); return;
+                String destination = navigation.back(requestedScreen);
+                if (destination.equals("exit")) { moveTaskToBack(true); return; }
+                if (destination.equals("game")) { leaveReview(); requestedScreen="game"; renderGame(); }
+                else navigate(destination);
+                return;
             case "ui.closeOverlay": return;
             case "confirm.accept": acceptConfirmation(payload.optString("token", "")); return;
             case "confirm.cancel": cancelConfirmation(payload.optString("token", "")); return;
             case "match.startBot": startBotFromPayload(payload); return;
             case "match.startPass": startPassFromPayload(payload); return;
             case "match.resume":
+                navigation.enterGame(requestedScreen, learnMode || endgameLesson >= 0);
                 leaveReview();
                 if (state != null && (state.optInt("winner", -1) >= 0 || lessonComplete())) { reviewIndex = 1; review(); return; }
                 requestedScreen = "game"; if (local || host) showSnapshot(); else renderGame(); return;
@@ -1163,7 +1169,7 @@ public final class KnightlineActivity extends ChessLinkActivity {
     }
 
     private JSONObject uiState() {
-        JSONObject root = obj("screen", requestedScreen, "session", "review".equals(requestedScreen) ? reviewSession() : session,
+        JSONObject root = obj("screen", requestedScreen, "backTarget", navigation.back(requestedScreen), "session", "review".equals(requestedScreen) ? reviewSession() : session,
                 "revision", revision + 1, "transport", transportPayload(), "profile", profilePayload(),
                 "lessons", lessonPayload(), "fontScale", fontScalePercent(), "archive", archivePayload(),
                 "settings", obj("sound", feedback == null || feedback.soundEnabled(), "vibration", feedback == null || feedback.vibrationEnabled(),
