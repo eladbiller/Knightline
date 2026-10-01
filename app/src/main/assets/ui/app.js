@@ -25,7 +25,7 @@
   let port = null;
   let sequence = 0;
   let selectedSquare = null;
-  let dragStart = null;
+  let boardDrag = null;
   let suppressNextBoardClick = false;
   let overlay = null;
   let overlayReturnFocus = null;
@@ -131,6 +131,7 @@
   }
 
   function stateEvent(event) {
+    const previousPosition=boardPositionKey();
     const payload = object(event.payload, {});
     applyFontScale(payload.fontScale);
     model.screen = payload.screen || model.screen;
@@ -143,6 +144,8 @@
     model.puzzle = object(payload.puzzle, {});
     model.archive = object(payload.archive, model.archive);
     model.settings = object(payload.settings, model.settings);
+    if(previousPosition!==boardPositionKey())selectedSquare=null;
+    if (boardDrag && boardDrag.key !== boardPositionKey()) cancelBoardDrag();
     // Any authoritative state response completes (or rejects) the one pending
     // board command. This prevents rapid taps from queuing a second move against
     // a position that is already changing natively.
@@ -206,7 +209,7 @@
     // state updates for the same destination (clocks, engine analysis, hints) must not
     // steal the player's scroll position.
     const screenChanged = renderedScreen !== model.screen;
-    if (screenChanged) selectedSquare = null;
+    if (screenChanged) { cancelBoardDrag(); selectedSquare = null; }
     app.dataset.screen = model.screen;
     patchHeader();
     patchNavigation();
@@ -286,7 +289,7 @@
   }
 
   function resumeCard(match) {
-    if (match.winner >= 0) return '<article class="surface surface--flat"><p class="eyebrow">Last game · finished</p><h2 class="surface-title">' + escape(match.opponent || 'Private game') + '</h2><div class="hero-actions"><button class="button button--mint" type="button" data-action="review-open" ' + (!match.canReview ? 'disabled' : '') + '>' + icon('review') + 'Review last game</button><button class="button button--quiet" type="button" data-action="nav-history">All games</button></div></article>';
+    if (match.winner >= 0 || match.lessonComplete) return '<article class="surface surface--flat"><p class="eyebrow">' + (match.lessonComplete?'Lesson complete':'Last game · finished') + '</p><h2 class="surface-title">' + escape(match.opponent || 'Private game') + '</h2><div class="hero-actions"><button class="button button--mint" type="button" data-action="review-open" ' + (!match.canReview ? 'disabled' : '') + '>' + icon('review') + (match.lessonComplete?'Review lesson':'Review last game') + '</button><button class="button button--quiet" type="button" data-action="nav-history">All games</button></div></article>';
     return '<article class="surface surface--flat"><div class="section-heading"><div><p class="eyebrow">Saved board</p><h2 class="surface-title">' +
       escape(match.yourTurn ? 'Your move is waiting' : 'Match in progress') + '</h2><p class="subtitle">' +
       escape(match.opponent || 'Private game') + ' · ' + escape(match.clock && match.clock.preset || 'Untimed') + '</p></div>' +
@@ -366,17 +369,54 @@
         '<span class="lesson-copy">' + escape(lesson.intro) + '</span></span><span class="progress-ring" data-label="' +
         escape(lesson.moves) + 'm" aria-label="' + escape(lesson.moves) + ' guided moves"></span></button>').join('') +
       '</section></section>';
+    const endgames=array(model.lessons.endgames);
+    main.querySelector('.screen').insertAdjacentHTML('beforeend','<section class="endgame-library"><p class="eyebrow">Convert the advantage</p><h2 class="surface-title">Learn to finish.</h2><p class="subtitle">Mating methods, stalemate traps, and what your pieces can actually force against a lone king.</p><div class="lesson-list">' + endgames.map(l=>'<button class="lesson-card" type="button" data-endgame="'+l.id+'"><span class="lesson-icon" aria-hidden="true">'+icon('learn')+'</span><span class="lesson-content"><span class="lesson-title">'+escape(l.name)+'</span><span class="lesson-copy">'+escape(l.verdict)+'</span></span><span aria-hidden="true">›</span></button>').join('')+'</div></section>');
+  }
+
+  function openLesson(lesson,endgame=false) {
+    overlay={kind:'lesson',lesson,endgame,side:0,pattern:false};openSheet('lesson');
+    const playable=!endgame||lesson.playable;
+    sheetScroll.innerHTML='<div class="sheet-heading"><div><p class="eyebrow">'+(endgame?'Endgame lesson':'Guided opening')+'</p><h2 id="sheet-title" class="sheet-title">'+escape(lesson.name)+'</h2></div><button class="icon-button" type="button" data-sheet-close aria-label="Close">'+icon('close')+'</button></div>'+
+      (endgame?'<p class="lesson-verdict">'+escape(lesson.verdict)+'</p>':'')+'<p class="body-copy" data-lesson-intro>'+escape(endgame?lesson.explanation:lesson.intro)+'</p>'+
+      (endgame?'<p class="body-copy lesson-method">'+escape(lesson.steps)+'</p>':'<p class="tiny">You play the selected color. The coach follows the other side of the opening. Untimed practice; use Hint at any step.</p>')+
+      (playable?'<fieldset class="lesson-side"><legend class="eyebrow">Play as</legend><div class="choice-grid choice-grid--two">'+[[0,'White'],[1,'Black']].map(([side,label])=>'<button type="button" class="choice" data-lesson-side="'+side+'" aria-pressed="'+(side===0)+'"><span class="side-disc side-disc--'+label.toLowerCase()+'"></span> '+label+'</button>').join('')+'</div></fieldset>'+
+        (endgame?'<fieldset class="lesson-side"><legend class="eyebrow">Practice</legend><div class="choice-grid choice-grid--two"><button class="choice" type="button" data-endgame-stage="technique" aria-pressed="true">Full technique</button><button class="choice" type="button" data-endgame-stage="pattern" aria-pressed="false">Finish pattern</button></div></fieldset><p class="tiny">Full technique uses Stockfish defense. Finish pattern starts one move from mate; it is not evidence that every position is won.</p>':'')+
+        '<div class="sheet-footer"><button class="button" type="button" data-sheet-close>Cancel</button><button class="button button--primary" type="button" data-lesson-start>Start as White</button></div>':'<p class="tiny">No unwinnable bot challenge: this material is a dead draw against a lone king. Try the rook or queen lesson to practise a forced mate.</p><button class="button button--wide" type="button" data-sheet-close>Back to lessons</button>');
   }
 
   function renderPuzzle() {
     const p = model.puzzle;
     if (!p || !p.available) { renderLearn(); return; }
     const action = ['Hint', 'Show piece', 'Show move', 'Hide hint'][p.hint || 0];
-    main.innerHTML = '<section class="screen puzzle-workspace"><div class="puzzle-title"><p class="eyebrow">' + (p.rating ? 'Difficulty ' + p.rating + ' · ' + p.steps + '-move line' : 'Warm-up · mate in one') + '</p><h1 class="surface-title">' + escape(p.name) + '</h1></div><div class="puzzle-status"><span class="side-disc side-disc--' + (p.me === 0 ? 'white' : 'black') + '"></span><strong>' + (p.failed ? 'Not quite — try another idea' : p.solved ? (p.assisted ? 'Practice solve' : 'First-try solve!') : p.pendingReply ? 'Opponent replies…' : p.me === 0 ? 'White to move' : 'Black to move') + '</strong><span>' + p.completedSteps + ' / ' + p.steps + '</span></div><div id="board-host" class="board-stage">' + boardLayout(p.position, p.me, !!p.yourTurn, {}, false) + '</div><article class="puzzle-feedback' + (p.failed ? ' puzzle-feedback--mistake' : '') + '" aria-live="polite"><p class="eyebrow">' + (p.failed ? 'Your move is shown' : p.solved ? 'Pattern found' : p.hint ? 'A little direction' : p.assisted ? 'Practice · earlier help or retry' : 'Calculate the continuation') + '</p><p class="body-copy">' + escape(p.copy) + '</p></article><div class="puzzle-actions"><button class="button" type="button" data-action="puzzle-retry">Restart</button><button class="button button--primary" type="button" data-action="' + (p.failed ? 'puzzle-undo' : p.solved ? 'puzzle-next' : 'puzzle-hint') + '" ' + (p.pendingReply ? 'disabled' : '') + '>' + (p.failed ? icon('undo') + 'Undo mistake' : p.solved ? 'Next puzzle →' : icon('hint') + escape(action)) + '</button></div></section>';
-    attachBoardInteractions();
+    const markup = '<section class="screen puzzle-workspace"><div class="puzzle-title"><p class="eyebrow">' + (p.rating ? 'Difficulty ' + p.rating + ' · ' + p.steps + '-move line' : 'Warm-up · mate in one') + '</p><h1 class="surface-title">' + escape(p.name) + '</h1></div><div class="puzzle-status"><span class="side-disc side-disc--' + (p.me === 0 ? 'white' : 'black') + '"></span><strong>' + (p.failed ? 'Not quite — try another idea' : p.solved ? (p.assisted ? 'Practice solve' : 'First-try solve!') : p.pendingReply ? 'Opponent replies…' : p.me === 0 ? 'White to move' : 'Black to move') + '</strong><span>' + p.completedSteps + ' / ' + p.steps + '</span></div><div id="board-host" class="board-stage">' + boardLayout(p.position, p.me, !!p.yourTurn, {}, false) + '</div><article class="puzzle-feedback' + (p.failed ? ' puzzle-feedback--mistake' : '') + '" aria-live="polite"><p class="eyebrow">' + (p.failed ? 'Your move is shown' : p.solved ? 'Pattern found' : p.hint ? 'A little direction' : p.assisted ? 'Practice · earlier help or retry' : 'Calculate the continuation') + '</p><p class="body-copy">' + escape(p.copy) + '</p></article><div class="puzzle-actions"><button class="button" type="button" data-action="puzzle-retry">Restart</button><button class="button button--primary" type="button" data-action="' + (p.failed ? 'puzzle-undo' : p.solved ? 'puzzle-next' : 'puzzle-hint') + '" ' + (p.pendingReply ? 'disabled' : '') + '>' + (p.failed ? icon('undo') + 'Undo mistake' : p.solved ? 'Next puzzle →' : icon('hint') + escape(action)) + '</button></div></section>';
+    paintBoardWorkspace(markup, '.puzzle-workspace');
   }
 
   function boardContext() { return model.screen === 'puzzle' ? model.puzzle : model.screen === 'review' ? model.review : model.match; }
+  function boardPositionKey() {
+    const c = boardContext(), p = c?.position;
+    return [model.screen,model.session,c?.token,c?.index,c?.me,p?.seq,array(p?.b).join(',')].join(':');
+  }
+  function paintBoardWorkspace(markup, selector) {
+    const existing = main.querySelector(selector), key = boardPositionKey();
+    if (existing?.dataset.positionKey === key) {
+      const template = document.createElement('template'); template.innerHTML = markup;
+      // Keep the live board connected: moving it into a new parent would lose
+      // pointer capture mid-drag when Stockfish publishes an evaluation.
+      const fresh = template.content.firstElementChild;
+      [...existing.children].forEach((child,index) => {
+        if(child.id !== 'board-host') child.replaceWith(fresh.children[index].cloneNode(true));
+      });
+      existing.querySelector('.board-overlay')?.replaceWith(fresh.querySelector('.board-overlay'));
+      const rail = existing.querySelector('.eval-rail'), nextRail = fresh.querySelector('.eval-rail');
+      if(rail && nextRail) { rail.setAttribute('aria-label',nextRail.getAttribute('aria-label')); rail.innerHTML=nextRail.innerHTML; }
+      refreshBoardOnly();
+    } else {
+      cancelBoardDrag(); main.innerHTML=markup;
+      main.querySelector(selector).dataset.positionKey=key;
+      attachBoardInteractions();
+    }
+  }
   function puzzleCommand(type, payload) {
     const p = model.puzzle;
     if (p) send('puzzle.' + type, Object.assign({token: p.token, positionSeq: p.position.seq}, payload || {}), false);
@@ -392,7 +432,7 @@
     main.innerHTML =
       '<section class="screen"><div><p class="eyebrow">Profile</p><h1 class="title">Your private skill.</h1><p class="subtitle">' +
       escape(profile.scope || 'Private skill rating · on this device') + '</p></div>' +
-      '<article class="surface feedback-settings"><div class="section-heading"><div><p class="eyebrow">Make it yours</p><h2 class="surface-title">Sound & vibration</h2></div></div>' + ['sound','vibration'].map(key => '<button class="setting-toggle" type="button" role="switch" aria-checked="' + !!model.settings[key] + '" data-feedback="' + key + '"><span><strong>' + (key==='sound'?'Game sounds':'Vibration') + '</strong><small>' + (key==='sound'?'Soft move, mistake and finish sounds':'Gentle feedback for board actions') + '</small></span><span class="switch-track" aria-hidden="true"><i></i></span></button>').join('') + '<p class="tiny">Your phone’s volume and system haptic settings still apply.</p><button class="button button--compact" type="button" data-action="feedback-preview">Test feedback</button></article>' +
+      '<article class="surface feedback-settings"><div class="section-heading"><div><p class="eyebrow">Make it yours</p><h2 class="surface-title">Sound & vibration</h2></div></div>' + ['sound','vibration'].map(key => '<button class="setting-toggle" type="button" role="switch" aria-checked="' + !!model.settings[key] + '" data-feedback="' + key + '"><span><strong>' + (key==='sound'?'Game sounds':'Vibration') + '</strong><small>' + (key==='sound'?'Crisp board clicks and capture sounds':'Firm native feedback for board actions') + '</small></span><span class="switch-track" aria-hidden="true"><i></i></span></button>').join('') + '<p class="tiny" data-vibration-status>'+escape(model.settings.vibrationStatus || 'Your phone’s volume and system haptic settings still apply.')+'</p><button class="button button--compact" type="button" data-action="feedback-preview">Test feedback</button></article>' +
       '<article class="surface hero"><div class="hero-grid"><div><p class="eyebrow">' + (profile.provisional ? 'Provisional estimate' : 'Established estimate') +
       '</p><h2 class="title">Keep playing clean games.</h2><p class="subtitle">Bot anchors are estimated: Easy 600, Medium 1200, Hard 1800.</p></div><div class="hero-rating"><span class="rating-number">' +
       escape(profile.rating || 800) + '</span><span class="rating-label">Private skill</span></div></div></article>' +
@@ -430,13 +470,13 @@
     const coach = object(match.coach, {});
     const winner = Number(match.winner);
     const finished = winner >= 0;
-    const opponentActive = !finished && Number(clock.active) !== Number(match.me);
-    const youActive = !finished && Number(clock.active) === Number(match.me);
+    const opponentActive = !finished && !match.lessonComplete && Number(clock.active) !== Number(match.me);
+    const youActive = !finished && !match.lessonComplete && Number(clock.active) === Number(match.me);
     const position = object(match.position, {});
     const evaluationEnabled = !!match.evaluationEnabled;
     const material = materialBalance(array(position.b));
-    main.innerHTML =
-      '<section class="screen screen--game play-workspace"><div class="game-topline"><div><p class="game-name">' + escape(finished ? gameResult(match) : match.yourTurn ? 'Your move' : 'Opponent to move') + '</p><span class="game-integrity">' + escape(match.practice || 'Practice') + '</span></div>' +
+    const markup =
+      '<section class="screen screen--game play-workspace"><div class="game-topline"><div><p class="game-name">' + escape(finished ? gameResult(match) : match.lessonComplete ? 'Lesson complete' : match.yourTurn ? 'Your move' : 'Opponent to move') + '</p><span class="game-integrity">' + escape(match.practice || 'Practice') + '</span></div>' +
       (evaluationEnabled ? '<button class="eval-chip" type="button" data-action="engine-info" aria-label="Stockfish evaluation ' + escape(coach.evaluation || 'not ready') + '. ' + escape(coach.evaluationState || 'Analyzing') + '">' +
       '<span class="eval-label">EVAL</span><span data-evaluation>' + escape(coach.evaluation || '—') + '</span><span class="eval-state">' + escape(coach.evaluationState || 'Analyzing') + '</span></button></div>' +
       '' : '<span class="game-state-pill">' + icon('check') + escape(finished ? 'Complete' : match.yourTurn ? 'Your turn' : 'In play') + '</span></div>') +
@@ -445,7 +485,7 @@
       playerCard(match.you || 'You', playerDetail(match.youDetail || 'Your side', material, Number(match.me)), 'ME', clockForYou(match, clock), youActive, false, 'you') +
       coachMarkup(coach, match, finished) +
       gameActions(match, finished) + '</section>';
-    attachBoardInteractions();
+    paintBoardWorkspace(markup, '.play-workspace');
   }
 
   function playerCard(name, detail, initialsValue, clock, active, bot, clockRole) {
@@ -467,6 +507,7 @@
   }
 
   function gameActions(match, finished) {
+    if (match.lessonComplete) return '<div class="game-actions"><button class="button button--primary" type="button" data-action="rematch">Restart</button><button class="button" type="button" data-action="review-open">Review</button><button class="button" type="button" data-action="nav-learn">Lessons</button></div>';
     if (finished) {
       return '<div class="game-actions"><button class="button button--primary" type="button" data-action="rematch">Rematch</button>' +
         '<button class="button" type="button" data-action="review-open">Review</button><button class="button" type="button" data-action="game-menu">More</button></div>';
@@ -488,21 +529,21 @@
     const category = reviewCategory(review.variation ? '' : review.verdict);
     const key = [model.session,review.index,review.mode,review.token,review.position.seq,review.me].join(':');
     const existing = main.querySelector('.review-workspace');
-    const title = review.variation ? 'Your analysis' : Math.ceil(Number(review.index)/2) + (Number(review.index)%2 ? '. ' : '… ') + (review.notation || 'Move');
+    const title = review.variation ? 'Your analysis' : reviewMovePrefix(array(review.timeline).find(m=>m.index===review.index) || {index:review.index,side:review.toMove}) + ' ' + (review.notation || 'Move');
     const copy = review.variation ? (review.variationLine || 'Play any legal continuation.') : liveGame ? 'Explore both sides. This analysis does not change your saved game.' : review.reason || 'Stockfish is grading the saved game. You can explore the board now.';
     const markup =
       '<section class="screen screen--review review-workspace" data-position-key="' + escape(key) + '"><div class="review-position-line"><div><span class="coach-kicker">' + escape(review.variation ? (review.toMove===0?'White':'Black') + ' to move' : review.player) + '</span><strong>' + escape(title) + '</strong></div><span class="review-verdict review-verdict--' + category.key + '">' + escape(review.variation ? 'Exploring' : scored ? category.label : 'Not graded yet') + '</span></div>' +
       '<div id="board-host" class="board-stage">' + boardLayout(object(review.position, {}), Number(review.me || 0), !!review.yourTurn, {evaluation:review.evaluation}, true) + '</div>' +
       reviewTimeline(review) +
-      '<div class="review-tools"><button class="button button--compact" type="button" data-action="review-best" aria-pressed="' + !!review.showBest + '" ' + (!review.canShowBest?'disabled':'') + '>' + (review.showBest?'Hide best':'Show best') + '</button><button class="button button--compact" type="button" data-action="review-undo" ' + (!review.variation?'disabled':'') + '>' + icon('undo') + 'Undo</button></div>' +
+      '<div class="review-tools"><button class="button button--compact" type="button" data-action="review-best" aria-pressed="' + !!review.showBest + '" ' + (!review.canShowBest?'disabled':'') + '>' + (review.showBest?'Hide best':'Show best') + '</button><button class="button button--compact" type="button" data-action="review-undo" ' + (!review.variationLength?'disabled':'') + '>' + icon('undo') + 'Undo</button></div>' +
       '<article class="review-insight review-insight--' + category.key + '"><button class="insight-reading" type="button" data-action="review-details"><div class="insight-heading"><span class="coach-kicker">' + (review.variation?'Independent line':'Position notes') + '</span><span class="detail-link">Details ›</span></div><p class="coach-copy">' + escape(copy) + '</p></button>' +
-      '<button class="review-score-line review-live-score" type="button" data-action="review-evaluate" aria-label="Evaluate this position. Positive favors White"><span>White’s score <strong data-review-evaluation>' + escape(review.evaluation || '…') + '</strong></span><span data-review-evaluation-state>' + escape(review.evaluationState || 'Analyzing…') + '</span></button>' +
-      '<div class="review-coach-actions"><button class="button button--compact" type="button" data-action="review-reset" ' + (!review.variation&&!review.showBest?'disabled':'') + '>Reset line</button><button class="button button--primary button--compact" type="button" data-action="review-key">Next key move →</button></div></article>' +
+      '<button class="review-score-line review-live-score" type="button" data-action="review-evaluate" aria-label="Reevaluate. Positive favors White"><span><span data-review-score-label>' + escape(review.evaluationLabel || 'After played move') + '</span> <strong data-review-evaluation>' + escape(review.evaluation || '…') + '</strong></span><span data-review-evaluation-state>' + escape(review.evaluationState || 'Analyzing…') + '</span></button>' +
+      '<div class="review-coach-actions"><button class="button button--compact" type="button" data-action="' + (review.variation?'review-reset':'review-explore') + '">' + (review.variation?'Reset line':'Play from here') + '</button><button class="button button--primary button--compact" type="button" data-action="review-key" ' + (nextKeyTarget()?'':'disabled') + '>' + (nextKeyTarget()?'Next key move →':'No more key moves') + '</button></div></article>' +
       '<div class="review-navigation"><button class="button" type="button" data-action="review-prev" aria-label="Previous move" ' + (review.canPrevious ? '' : 'disabled') + '>←</button><button class="button review-counter" type="button" data-action="review-list">' + escape(review.index) + ' <span>/ ' + escape(review.total) + ' moves</span></button><button class="button" type="button" data-action="review-next" aria-label="Next move" ' + (review.canNext ? '' : 'disabled') + '>→</button></div></section>';
     if (existing?.dataset.positionKey === key) {
       // Engine/grade updates must not replace squares or interrupt a drag.
       const template = document.createElement('template'); template.innerHTML = markup;
-      for (const selector of ['.review-position-line','.review-timeline','.review-tools','.review-insight']) existing.querySelector(selector).replaceWith(template.content.querySelector(selector));
+      for (const selector of ['.review-position-line','.review-timeline','.review-tools','.review-insight','.review-navigation']) existing.querySelector(selector).replaceWith(template.content.querySelector(selector));
       const rail = existing.querySelector('.eval-rail'), freshRail = template.content.querySelector('.eval-rail');
       if(rail && freshRail) {
         rail.setAttribute('aria-label',freshRail.getAttribute('aria-label'));
@@ -526,11 +567,15 @@
   }
 
   function keyMoves() { return array(model.review.timeline).filter(m => /mistake|blunder|inaccuracy/i.test(m.verdict) && (reviewFilter==='both'||reviewFilter==='mine'&&m.side===model.review.mySide||reviewFilter==='white'&&m.side===0||reviewFilter==='black'&&m.side===1)); }
+  function reviewMovePrefix(move) {
+    const index=Number(move.index), side=Number(move.side ?? (index-1)%2);
+    const initialSide=(side+index-1)%2;
+    return (Math.floor((index-1+initialSide)/2)+1)+(side===0?'.':'…');
+  }
+  function nextKeyTarget() { return keyMoves().find(m => m.index > model.review.index); }
   function nextKeyMove() {
-    const keys = keyMoves();
-    if (!keys.length) { openReviewOverview(); return; }
-    const target = keys.find(m => m.index > model.review.index) || keys[0];
-    send('review.jump', {index: target.index});
+    const target = nextKeyTarget();
+    if (target) send('review.jump', {index: target.index});
   }
   function openReviewOverview() {
     overlay = {kind:'review-overview'}; openSheet('review-overview');
@@ -541,16 +586,17 @@
     const r = model.review, moves = array(r.timeline), keys = keyMoves();
     const counts = {};
     ['best','good','inaccuracy','mistake','blunder'].forEach(k => counts[k] = [0,0]);
-    moves.forEach(m => {const category = reviewCategory(m.verdict).key;if(counts[category])counts[category][(m.index-1)%2]++;});
+    moves.forEach(m => {const category = reviewCategory(m.verdict).key;if(counts[category])counts[category][Number(m.side)]++;});
     const analyzed = moves.filter(m => !!m.verdict).length;
     const complete = analyzed === moves.length && !r.liveGame;
     const filters = r.mySide >= 0 ? [['both','Both players'],['mine','My moves']] : [['both','Both players'],['white','White'],['black','Black']];
     return '<div class="sheet-heading"><div><p class="eyebrow">Your game, understood</p><h2 id="sheet-title" class="sheet-title">Review highlights</h2></div><button class="icon-button" type="button" data-sheet-close aria-label="Close">' + icon('close') + '</button></div>' +
       '<div class="review-overview-status"><span class="result-badge">' + (r.liveGame ? 'Game in progress' : complete ? 'Analysis ready' : 'Analyzing on device') + '</span><span class="tiny">' + analyzed + ' / ' + moves.length + ' moves</span></div>' +
       '<p class="body-copy overview-lead">' + (r.liveGame ? 'Browse the moves now. Finish the game for scored feedback.' : keys.length ? keys.length + ' moment' + (keys.length === 1 ? '' : 's') + ' to learn from. Revisit the turning points and try a better move.' : complete ? 'No inaccuracies found in this search. Walk through the game to see Stockfish’s recommendations.' : 'Stockfish is comparing your moves with its best alternatives.') + '</p>' +
+      '<div class="overview-graph"><div class="overview-graph-label"><strong>Game evaluation</strong><span>White ↑ · Black ↓</span></div>' + reviewTimeline(r) + '</div>' +
       '<button class="button button--primary button--wide" type="button" data-action="review-start-guided">' + (keys.length ? 'Review key moments' : 'Walk through the game') + ' →</button><h3 class="key-moments-heading">Key moments</h3>' +
-      '<div class="review-filters" aria-label="Highlight player filter">' + filters.map(([id,label])=>'<button class="chip" type="button" data-review-filter="' + id + '" aria-pressed="' + (reviewFilter===id) + '">' + label + '</button>').join('') + '</div><div class="overview-key-list">' + keys.map(m=>'<button class="choice choice-row" type="button" data-review-jump="' + m.index + '"><span class="move-mark move-mark--' + reviewCategory(m.verdict).key + '">' + reviewCategory(m.verdict).mark + '</span><span><small class="highlight-player">' + escape(m.player) + '</small><strong>' + Math.ceil(m.index/2) + (m.index%2?'. ':'… ') + escape(m.notation) + '</strong><small>' + escape(m.verdict) + '</small></span><span>›</span></button>').join('') + (keys.length?'':'<p class="tiny">No graded key moments for this filter.</p>') + '</div>' +
-      '<details class="overview-statistics"><summary>All moves & game statistics</summary><div class="overview-graph">' + reviewTimeline(r) + '</div>' +
+      '<div class="review-filters" aria-label="Highlight player filter">' + filters.map(([id,label])=>'<button class="chip" type="button" data-review-filter="' + id + '" aria-pressed="' + (reviewFilter===id) + '">' + label + '</button>').join('') + '</div><div class="overview-key-list">' + keys.map(m=>'<button class="choice choice-row" type="button" data-review-jump="' + m.index + '"><span class="move-mark move-mark--' + reviewCategory(m.verdict).key + '">' + reviewCategory(m.verdict).mark + '</span><span><small class="highlight-player">' + escape(m.player) + '</small><strong>' + reviewMovePrefix(m) + ' ' + escape(m.notation) + '</strong><small>' + escape(m.verdict) + '</small></span><span>›</span></button>').join('') + (keys.length?'':'<p class="tiny">No graded key moments for this filter.</p>') + '</div>' +
+      '<details class="overview-statistics"><summary>Game statistics</summary>' +
       '<div class="review-player-key"><span><i class="side-disc side-disc--white"></i>' + escape(r.whitePlayer) + '</span><span><i class="side-disc side-disc--black"></i>' + escape(r.blackPlayer) + '</span></div><div class="classification-table"><div class="classification-row classification-heading"><span>Move quality</span><span>White</span><span>Black</span></div>' + Object.keys(counts).map(k=>{const c=reviewCategory(k);return '<div class="classification-row"><span><i class="move-mark move-mark--' + k + '">' + c.mark + '</i>' + c.label + '</span><strong>' + counts[k][0] + '</strong><strong>' + counts[k][1] + '</strong></div>';}).join('') + '</div>' +
       '<p class="tiny">Engine classifications, not a global accuracy rating. Offline, time-limited analysis may change with a deeper search.</p></details>';
   }
@@ -566,7 +612,7 @@
       const segment = 'M' + x1 + ' ' + y(moves[i-1]) + 'L' + x2 + ' ' + y(m);
       return '<path class="analysis-area" d="' + segment + 'L' + x2 + ' 16L' + x1 + ' 16Z"/><path class="analysis-line" d="' + segment + '"/>';
     }).join('') + '<path class="analysis-cursor" d="M' + ((Number(review.index) - 1) / Math.max(1, moves.length - 1) * 100) + ' 0v32"/></svg>' : '<div class="analysis-caption">' + (review.liveGame ? 'Your game, move by move' : 'Evaluation appears as Stockfish analyzes') + '</div>';
-    return '<div class="review-timeline">' + chart + '<div class="review-ribbon" aria-label="Jump to move">' + moves.map((m) => '<button type="button" data-review-jump="' + m.index + '" aria-current="' + (m.index === review.index ? 'step' : 'false') + '"><span>' + Math.ceil(m.index / 2) + (m.index % 2 ? '.' : '…') + '</span> ' + escape(m.notation) + '</button>').join('') + '</div></div>';
+    return '<div class="review-timeline">' + chart + '<div class="review-ribbon" aria-label="Jump to move">' + moves.map((m) => '<button type="button" data-review-jump="' + m.index + '" aria-current="' + (m.index === review.index ? 'step' : 'false') + '"><span>' + reviewMovePrefix(m) + '</span> ' + escape(m.notation) + '</button>').join('') + '</div></div>';
   }
 
   function openReading(title, copy, extra) {
@@ -728,30 +774,66 @@
         // A touch drag normally emits a trailing click.  Do not turn a
         // completed drag move into a stale follow-up selection.
         if (suppressNextBoardClick) {
-          event.preventDefault();
+          event.preventDefault(); suppressNextBoardClick = false;
           return;
         }
         selectSquare(Number(button.dataset.square));
       });
       button.addEventListener('pointerdown', (event) => {
-        dragStart = Number(button.dataset.square);
-        button.setPointerCapture && button.setPointerCapture(event.pointerId);
+        if (!event.isPrimary || event.button !== 0 || boardDrag) return;
+        suppressNextBoardClick = false;
+        const from = Number(button.dataset.square);
+        if (overlay || movePending || !boardContext()?.yourTurn || !canSelectFrom(from)) return;
+        boardDrag = {from,button,board,key:boardPositionKey(),pointer:event.pointerId,x:event.clientX,y:event.clientY,
+          previous:selectedSquare,active:false,ghost:null,drop:null};
+        button.setPointerCapture(event.pointerId);
+      });
+      button.addEventListener('pointermove', (event) => {
+        const d=boardDrag;
+        if(!d || d.pointer!==event.pointerId)return;
+        if(!d.active && Math.hypot(event.clientX-d.x,event.clientY-d.y)<6)return;
+        if(!d.active){
+          d.active=true; selectedSquare=d.from; prepareReviewExploration(); refreshBoardOnly();
+          const piece=button.querySelector('.piece-svg'), size=button.getBoundingClientRect().width*1.18;
+          d.size=size; d.lift=event.pointerType==='touch'?size*.38:0;
+          d.ghost=document.createElement('div');d.ghost.className='drag-piece';d.ghost.setAttribute('aria-hidden','true');
+          d.ghost.style.width=d.ghost.style.height=size+'px';d.ghost.appendChild(piece.cloneNode(true));
+          document.body.appendChild(d.ghost);button.classList.add('square--drag-source');
+        }
+        event.preventDefault();
+        d.ghost.style.transform=`translate3d(${event.clientX-d.size/2}px,${event.clientY-d.size/2-d.lift}px,0)`;
+        const target=document.elementFromPoint(event.clientX,event.clientY)?.closest('[data-square]');
+        const legal=target && board.contains(target) && array(boardContext().position.moves).some(m=>Number(m[0])===d.from&&Number(m[1])===Number(target.dataset.square));
+        d.drop?.classList.remove('square--drop');d.drop=legal?target:null;d.drop?.classList.add('square--drop');
       });
       button.addEventListener('pointerup', (event) => {
-        if (dragStart == null) return;
-        const hit = document.elementFromPoint(event.clientX, event.clientY);
-        const target = hit && hit.closest ? hit.closest('[data-square]') : null;
-        const from = dragStart;
-        dragStart = null;
-        if (target && Number(target.dataset.square) !== from) {
+        const d=boardDrag;if(!d||d.pointer!==event.pointerId)return;
+        const target=document.elementFromPoint(event.clientX,event.clientY)?.closest('[data-square]');
+        finishBoardDrag();
+        if(d.active){
           suppressNextBoardClick = true;
-          tryMove(from, Number(target.dataset.square));
-          window.setTimeout(() => { suppressNextBoardClick = false; }, 0);
+          if(target && board.contains(target) && d.key===boardPositionKey())tryMove(d.from,Number(target.dataset.square));
+          window.setTimeout(() => { suppressNextBoardClick = false; }, 350);
         }
       });
-      button.addEventListener('pointercancel', () => { dragStart = null; });
+      button.addEventListener('pointercancel', cancelBoardDrag);
+      button.addEventListener('lostpointercapture', cancelBoardDrag);
     });
   }
+
+  function finishBoardDrag() {
+    const d=boardDrag;if(!d)return;boardDrag=null;
+    d.ghost?.remove();d.button.classList.remove('square--drag-source');d.drop?.classList.remove('square--drop');
+    if(d.button.hasPointerCapture(d.pointer))d.button.releasePointerCapture(d.pointer);
+    return d;
+  }
+  function cancelBoardDrag() {
+    const d=finishBoardDrag();if(!d)return;
+    selectedSquare=d.previous!=null&&canSelectFrom(d.previous)?d.previous:null;
+    refreshBoardOnly();
+  }
+  window.addEventListener('blur',cancelBoardDrag);
+  document.addEventListener('visibilitychange',()=>{if(document.hidden)cancelBoardDrag();});
 
   function canSelectFrom(square) {
     const context = boardContext();
@@ -759,10 +841,18 @@
     return position && array(position.moves).some((move) => Number(move[0]) === square);
   }
 
+  function prepareReviewExploration() {
+    if(model.screen!=='review'||model.review.variation)return;
+    model.review.variation=true;
+    main.querySelector('.board-overlay')?.replaceChildren();
+    reviewCommand('explore');
+  }
+
   function selectSquare(square) {
     if (movePending || !boardContext() || !boardContext().yourTurn) return;
     if (selectedSquare == null) {
       if (canSelectFrom(square)) {
+        prepareReviewExploration();
         selectedSquare = square;
         refreshBoardOnly();
       }
@@ -824,6 +914,7 @@
       button.classList.toggle('square--selected', selected);
       button.classList.toggle('square--legal', legal && !piece);
       button.classList.toggle('square--capture', legal && !!piece);
+      button.classList.toggle('square--coach-source', square===Number(position.bestFrom)&&Number(position.bestTo??-1)<0);
       button.setAttribute('aria-label', squareLabel(square, piece, legal, selected));
       button.disabled = movePending;
     });
@@ -1006,6 +1097,7 @@
   }
 
   function openSheet(kind) {
+    cancelBoardDrag();
     clearTimeout(closingSheetTimer);
     const active = document.activeElement;
     if (active && active !== document.body && !sheet.contains(active)) overlayReturnFocus = active;
@@ -1071,7 +1163,7 @@
       else if (value === 'remote-setup') openSetup('remote');
       else if (value === 'resume') { showReviewOverview = !!model.match && model.match.winner >= 0; send('match.resume'); }
       else if (value === 'coach') send('coach.advance');
-      else if (value === 'coach-details') openReading(model.match.coach.heading || 'Position coach', model.match.coach.copy);
+      else if (value === 'coach-details') openReading(model.match.coach.heading || 'Position coach', model.match.coach.copy+(model.match.endgame?'\n\n'+model.match.endgame.method:''));
       else if (value === 'takeback') send('match.takeback');
       else if (value === 'moves') send('match.openMoves');
       else if (value === 'game-menu') send('match.openMenu');
@@ -1086,9 +1178,10 @@
       else if (value === 'review-evaluate') send('review.evaluate');
       else if (value === 'review-undo') reviewCommand('undo');
       else if (value === 'review-reset') send('review.reset');
+      else if (value === 'review-explore') reviewCommand('explore');
       else if (value === 'review-start-guided') { closeOverlay(); send('review.jump', {index:keyMoves()[0]?.index || 1}); }
       else if (value === 'review-details') openReading(model.review.variation ? 'Your analysis line' : model.review.verdict || 'Position details', model.review.variation ? model.review.variationLine + '\n\nMove either side in turn. Evaluation is always from White’s perspective: positive favors White; negative favors Black. Your saved game and rating are unchanged.' : (model.review.report || 'Saved moves are being analyzed. You can move either side and see a fresh position evaluation now.') + '\n\nPosition evaluation: positive favors White; negative favors Black. Move-report comparison scores are labeled for their player.');
-      else if (value === 'review-list') openReading('Move navigator', 'Choose any move to inspect it.', '<div class="move-navigator">' + array(model.review.timeline).map((m) => '<button class="choice" type="button" data-review-jump="' + m.index + '"><span class="tiny">' + escape(m.player) + '</span><strong>' + Math.ceil(m.index / 2) + (m.index % 2 ? '. ' : '… ') + escape(m.notation) + '</strong><span class="tiny">' + escape(m.verdict || 'Unscored') + '</span></button>').join('') + '</div>');
+      else if (value === 'review-list') openReading('Move navigator', 'Choose any move to inspect it.', '<div class="move-navigator">' + array(model.review.timeline).map((m) => '<button class="choice" type="button" data-review-jump="' + m.index + '"><span class="tiny">' + escape(m.player) + '</span><strong>' + reviewMovePrefix(m) + ' ' + escape(m.notation) + '</strong><span class="tiny">' + escape(m.verdict || 'Unscored') + '</span></button>').join('') + '</div>');
       else if (value === 'engine-info') send('engine.info', {}, false);
       else if (value.startsWith('puzzle-')) puzzleCommand(value.substring(7));
       return;
@@ -1121,8 +1214,25 @@
     if(puzzlePagination) { puzzlePage += Number(puzzlePagination.dataset.puzzlePage); renderLearn(); main.querySelector('.puzzle-library')?.scrollIntoView({block:'start'}); return; }
     const lesson = event.target.closest('[data-lesson]');
     if (lesson) {
-      send('learn.start', {lesson: Number(lesson.dataset.lesson)});
+      openLesson(array(model.lessons.items).find(l=>l.id===Number(lesson.dataset.lesson)));
       return;
+    }
+    const endgame=event.target.closest('[data-endgame]');
+    if(endgame){openLesson(array(model.lessons.endgames).find(l=>l.id===Number(endgame.dataset.endgame)),true);return;}
+    const lessonSide=event.target.closest('[data-lesson-side]');
+    if(lessonSide && overlay?.kind==='lesson'){
+      overlay.side=Number(lessonSide.dataset.lessonSide);
+      if(!overlay.endgame)sheet.querySelector('[data-lesson-intro]').textContent=overlay.side===1?overlay.lesson.introBlack:overlay.lesson.intro;
+      sheet.querySelectorAll('[data-lesson-side]').forEach(e=>e.setAttribute('aria-pressed',String(Number(e.dataset.lessonSide)===overlay.side)));
+      sheet.querySelector('[data-lesson-start]').textContent='Start as '+(overlay.side===0?'White':'Black');return;
+    }
+    const endgameStage=event.target.closest('[data-endgame-stage]');
+    if(endgameStage && overlay?.kind==='lesson'){
+      overlay.pattern=endgameStage.dataset.endgameStage==='pattern';
+      sheet.querySelectorAll('[data-endgame-stage]').forEach(e=>e.setAttribute('aria-pressed',String((e.dataset.endgameStage==='pattern')===overlay.pattern)));return;
+    }
+    if(event.target.closest('[data-lesson-start]') && overlay?.kind==='lesson'){
+      const {lesson,side,endgame,pattern}=overlay;closeOverlay();send(endgame?'learn.endgame':'learn.start',{lesson:lesson.id,side,pattern},false);return;
     }
     const puzzle = event.target.closest('[data-puzzle]');
     if (puzzle) { send('puzzle.start', {index: Number(puzzle.dataset.puzzle),collection:puzzleFilter}, false); return; }

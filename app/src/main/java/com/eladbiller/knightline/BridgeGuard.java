@@ -24,10 +24,10 @@ public final class BridgeGuard {
             "match.startBot", "match.startPass", "match.resume", "match.move",
             "match.takeback", "match.resign", "match.rematch", "match.retryBot",
             "match.openMoves", "match.openMenu", "match.clear", "match.inviteRemote", "match.suggestRemote",
-            "learn.start", "promotion.choose", "coach.advance",
+            "learn.start", "learn.endgame", "promotion.choose", "coach.advance",
             "puzzle.start", "puzzle.move", "puzzle.hint", "puzzle.retry", "puzzle.next", "puzzle.undo",
             "review.open", "review.previous", "review.next", "review.jump",
-            "review.try", "review.best", "review.undo", "review.reset", "review.evaluate",
+            "review.try", "review.best", "review.undo", "review.reset", "review.evaluate", "review.explore",
             "transport.host", "transport.join", "transport.scan", "transport.connect",
             "transport.disconnect", "transport.settings",
             "online.host", "online.join", "chat.open", "chat.send", "engine.info"

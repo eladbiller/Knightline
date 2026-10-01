@@ -20,6 +20,15 @@ public final class ChessTutor {
  "Black prepares d5 with e6. Take central space, support e4 with a knight, and notice Black's pin with Bb4.",
  "Black prepares d5 with c6 and keeps the light-squared bishop free. Develop, recapture in the centre, and notice Bf5."};
  public static int lessonMoveCount(int lesson){if(lesson<0||lesson>=LINES.length)return 0;return (LINES[lesson].split(" ").length+1)/2;}
+ public static final String[] BLACK_INTRO={
+ "Meet White's centre with e5, defend that pawn with Nc6, and develop your bishop actively to c5.",
+ "Claim the centre with e5, support it with Nc6, then question the Spanish bishop with a6.",
+ "Hold central space with d5, support it with e6, and develop your king's knight to f6.",
+ "Meet d4 with d5, develop Nf6, and strengthen the centre with e6 against White's London setup.",
+ "Challenge e4 with c5. Support the centre with d6, exchange on d4, then develop Nf6 with tempo on e4.",
+ "Prepare d5 with e6, challenge White's centre, then pin the knight with Bb4 in the Winawer line.",
+ "Prepare d5 with c6, exchange on e4, then develop your light-squared bishop before closing its diagonal."};
+ public static String objective(int lesson,int side){return side==1&&lesson>=0&&lesson<BLACK_INTRO.length?BLACK_INTRO[lesson]:objective(lesson);}
  public static String objective(int lesson){if(lesson<0||lesson>=INTRO.length)return "Use the centre, development and king safety.";String text=INTRO[lesson];int end=text.indexOf('.');return end<0?text:text.substring(0,end+1);}
  public static int[] next(Game game,int lesson){if(lesson<0||lesson>=LINES.length)return null;String[] moves=LINES[lesson].split(" ");int ply=game.chessMoves.size();if(ply>=moves.length)return null;return StockfishEngine.parseMove(game,moves[ply]);}
  public static String opening(Game game){int ply=game.chessMoves.size();if(ply==0)return "Opening principles: centre, development, king safety.";StringBuilder path=new StringBuilder();Game initial=new Game(0,0);for(int[] m:game.chessMoves){if(path.length()>0)path.append(' ');path.append(StockfishEngine.uci(initial,m));initial.chessApply(m[0],m[1],m[2]);initial.turn=1-initial.turn;}

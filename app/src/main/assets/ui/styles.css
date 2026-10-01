@@ -152,6 +152,10 @@ button:disabled { cursor: not-allowed; opacity: .48; }
 .square { position: relative; display: grid; place-items: center; min-width: 0; min-height: 0; padding: 0; border: 0; background: var(--board-light); color: #17233c; }
 .square:disabled { opacity: 1; }
 .square--dark { background: var(--board-dark); }
+.square--drag-source > .piece-svg { visibility: hidden; }
+.square--drop { outline: 3px solid rgba(255,250,240,.85); outline-offset: -3px; }
+.drag-piece { position: fixed; left: 0; top: 0; z-index: 35; pointer-events: none; will-change: transform; }
+.drag-piece .piece-svg { width: 100%; height: 100%; filter: drop-shadow(0 9px 5px rgba(0,0,0,.5)); }
 .square--last { box-shadow: inset 0 0 0 999px rgba(245, 193, 75, .31); }
 .square--selected { outline: clamp(2px, .7vw, 4px) solid rgba(88, 236, 199, .98); outline-offset: calc(clamp(2px, .7vw, 4px) * -1); box-shadow: inset 0 0 0 999px rgba(49, 196, 166, .18); }
 .square--legal::after { content: ""; position: absolute; z-index: 1; width: 24%; aspect-ratio: 1; border-radius: 50%; background: rgba(18, 43, 71, .36); box-shadow: 0 0 0 1px rgba(255,255,255,.11); }
@@ -464,6 +468,16 @@ button:disabled { cursor: not-allowed; opacity: .48; }
 .overview-lead { margin: 12px 0; }
 .overview-graph .review-timeline { height: 110px; grid-template-rows: 64px 44px; }
 .overview-graph .analysis-chart { height: 64px; }
+.overview-graph { margin: 12px 0; }
+.overview-graph-label { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 4px; margin-bottom: 7px; font-size: .75rem; color: var(--mist); }
+.endgame-library { display: grid; gap: 12px; margin-top: 24px; }
+.lesson-verdict { color: var(--mint); font-weight: 750; margin: 8px 0; }
+.lesson-method { white-space: pre-line; }
+.lesson-side { border: 0; padding: 0; margin: 18px 0; }
+.lesson-side legend { margin-bottom: 10px; }
+.bottom-sheet[data-sheet-kind="lesson"] .sheet-footer { position: static; margin-top: 18px; }
+.bottom-sheet[data-sheet-kind="lesson"] { height: min(90dvh, 46rem); }
+.bottom-sheet[data-sheet-kind="lesson"] .sheet-scroll { height: 100%; }
 .classification-table { margin: 16px 0 10px; }
 .classification-row { display: grid; grid-template-columns: minmax(0,1fr) 50px 50px; align-items: center; min-height: 38px; gap: 8px; font-size: .81rem; border-bottom: 1px solid var(--line); }
 .classification-row > span:first-child { display: flex; align-items: center; gap: 9px; }

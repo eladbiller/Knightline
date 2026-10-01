@@ -93,9 +93,15 @@ async function drag(from, to) {
   for (let n = 1; n <= 12; n++) {
     await delay(25);
     await cdp.call('Input.dispatchTouchEvent', {type:'touchMove',touchPoints:[{x:a.x+(b.x-a.x)*n/12,y:a.y+(b.y-a.y)*n/12,id:1}]});
+    if(n===6){
+      const lift=await cdp.evaluate(`(()=>{const g=document.querySelector('.drag-piece'),s=document.querySelector('[data-square="${from}"] .piece-svg');return {present:!!g,hidden:getComputedStyle(s).visibility,rect:g?.getBoundingClientRect().toJSON()}})()`);
+      assert(lift.present&&lift.hidden==='hidden','Dragging must lift the piece, not leave it at the origin');
+      assert(Math.abs(lift.rect.x+lift.rect.width/2-(a.x+b.x)/2)<2,'Floating piece follows pointer');
+    }
   }
   await cdp.call('Input.dispatchTouchEvent', {type:'touchEnd',touchPoints:[]});
   await delay(200);
+  assert.equal(await cdp.evaluate(`document.querySelectorAll('.drag-piece,.square--drag-source,.square--drop').length`),0,'Drop leaves no ghost');
 }
 async function startGame() {
   if (await cdp.evaluate(`!!document.querySelector('[data-action="nav-home"]')`)) {
@@ -108,6 +114,7 @@ async function startGame() {
   } else if (mode === 'lesson') {
     await touch('[data-nav="learn"]');
     await touch('[data-lesson="0"]', true);
+    await touch('[data-lesson-start]', true);
   } else await touch('[data-action="setup-bot"]', true);
   if (mode !== 'lesson') {
     await waitFor(`document.querySelector('#bottom-sheet').dataset.open === 'true'`, 'setup');

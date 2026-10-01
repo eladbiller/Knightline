@@ -85,6 +85,8 @@ public final class KnightlineActivity extends ChessLinkActivity {
     private int reviewWorkspaceIndex = -1, reviewOrientation;
     private String reviewWorkspaceSession = "";
     private boolean reviewShowBest;
+    private boolean reviewExploring;
+    private Game reviewEvaluatedPosition;
     private volatile long reviewSearchGeneration;
     private volatile StockfishEngine reviewEngine;
     private final java.util.concurrent.ExecutorService reviewWorker = java.util.concurrent.Executors.newSingleThreadExecutor();
@@ -97,6 +99,10 @@ public final class KnightlineActivity extends ChessLinkActivity {
     private ChessFeedback feedback;
     private String feedbackSession = "", feedbackBoard = "";
     private int feedbackSequence = -1;
+    private int feedbackPieces;
+    private int pendingLessonSide=-1, pendingEndgame=-1, endgameLesson=-1;
+    private boolean pendingEndgamePattern;
+    private boolean endgamePattern;
 
     @Override public void onCreate(Bundle bundle) {
         // MainActivity restores its native save and calls the virtual home().
@@ -106,6 +112,11 @@ public final class KnightlineActivity extends ChessLinkActivity {
         ratingOutcomeSession = getSharedPreferences("knightline-rating-session", MODE_PRIVATE)
                 .getString("completed", "");
         restoreSessionIntegrityState();
+        android.content.SharedPreferences endgamePrefs=getSharedPreferences("knightline-endgame",MODE_PRIVATE);
+        if(learnMode&&openingLesson<0&&session.equals(endgamePrefs.getString("session","")))
+            endgameLesson=endgamePrefs.getInt("lesson",-1);
+        if(endgameLesson>=EndgameLessons.ALL.length)endgameLesson=-1;
+        endgamePattern=endgamePrefs.getBoolean("pattern",false);
         try { gameArchive = new GameArchive(new java.io.File(getFilesDir(), "game-library")); archiveCurrentGame(); }
         catch (Exception error) { archiveError = "Game library could not be loaded. Your active save is unchanged."; android.util.Log.e("Knightline", archiveError, error); }
         feedback = new ChessFeedback(this);
@@ -467,6 +478,8 @@ public final class KnightlineActivity extends ChessLinkActivity {
     }
 
     @Override void startGame(int id) {
+        endgameLesson=pendingEndgame;
+        endgamePattern=pendingEndgame>=0&&pendingEndgamePattern;
         leaveReview();
         requestedScreen = "game";
         usedHint = false;
@@ -490,9 +503,21 @@ public final class KnightlineActivity extends ChessLinkActivity {
     }
 
     @Override void showSnapshot() {
+        // Consume setup before the first snapshot can save, render or start a bot.
+        if(pendingLessonSide>=0&&game!=null){
+            me=pendingLessonSide;pendingLessonSide=-1;
+            if(pendingEndgame>=0){game=EndgameLessons.position(pendingEndgame,me,pendingEndgamePattern);pendingEndgame=-1;}
+        }
         super.showSnapshot();
         ensureFriendRatingExchange();
         recordFinishedRatingIfEligible();
+    }
+
+    @Override void scheduleBot() {
+        // Black's final authored move leaves White to move. Do not let the
+        // legacy engine fallback extend a completed, finite opening lesson.
+        if (lessonComplete()) return;
+        super.scheduleBot();
     }
 
     @Override public void message(JSONObject message) {
@@ -597,10 +622,11 @@ public final class KnightlineActivity extends ChessLinkActivity {
             case "settings.feedback":
                 if (!(payload.opt("enabled") instanceof Boolean)) { reject("Invalid feedback setting."); return; }
                 feedback.set(payload.optString("key"), payload.optBoolean("enabled")); publishState(); return;
-            case "settings.preview": feedback.play(webView, "move"); return;
+            case "settings.preview": feedback.play(webView, "move");
+                notice(feedback.vibrationEnabled()?feedback.vibrationStatus():feedback.soundEnabled()?"Sound preview. Vibration is switched off in Profile.":"Sound and vibration are both switched off in Profile.",false); return;
             case "nav.back":
                 if ("puzzle".equals(requestedScreen)) { requestedScreen = "learn"; publishState(); return; }
-                if (reviewing && archivedReview == null && state != null && state.optInt("winner", -1) < 0) {
+                if (reviewing && archivedReview == null && state != null && state.optInt("winner", -1) < 0 && !lessonComplete()) {
                     leaveReview(); requestedScreen = "game"; renderGame();
                 } else home();
                 publishState(); return;
@@ -611,9 +637,10 @@ public final class KnightlineActivity extends ChessLinkActivity {
             case "match.startPass": startPassFromPayload(payload); return;
             case "match.resume":
                 leaveReview();
-                if (state != null && state.optInt("winner", -1) >= 0) { reviewIndex = 1; review(); return; }
+                if (state != null && (state.optInt("winner", -1) >= 0 || lessonComplete())) { reviewIndex = 1; review(); return; }
                 requestedScreen = "game"; if (local || host) showSnapshot(); else renderGame(); return;
             case "learn.start": beginLesson(payload); return;
+            case "learn.endgame": beginEndgame(payload); return;
             case "puzzle.start": puzzleCollection = payload.optString("collection", "all"); startPuzzle(payload.optInt("index", -1)); return;
             case "puzzle.move":
             case "puzzle.hint":
@@ -633,8 +660,16 @@ public final class KnightlineActivity extends ChessLinkActivity {
             case "match.inviteRemote":
             case "match.suggestRemote": inviteRemoteChess(payload); return;
             case "review.open": leaveReview(); reviewIndex = state != null && state.optInt("winner", -1) >= 0 ? 1 : Math.max(1, reviewTotal() - 1); reviewMode = 0; resetReviewWorkspace(); review(); return;
-            case "review.previous": if (reviewIndex > 1) { reviewIndex--; resetReviewWorkspace(); review(); } return;
-            case "review.next": if (reviewIndex < reviewTotal() - 1) { reviewIndex++; resetReviewWorkspace(); review(); } return;
+            case "review.previous":
+                if (reviewExploring) { resetReviewWorkspace(); review(); }
+                else if (reviewIndex > 1) { reviewIndex--; resetReviewWorkspace(); review(); } return;
+            case "review.next":
+                if (reviewExploring) { resetReviewWorkspace(); review(); }
+                else if (reviewIndex < reviewTotal() - 1) { reviewIndex++; resetReviewWorkspace(); review(); } return;
+            case "review.explore":
+                if (!validReviewPosition(payload)) return;
+                if (!reviewExploring) { reviewExploring=true; reviewShowBest=false; scheduleReviewEvaluation(); }
+                publishState(); return;
             case "review.jump":
                 int target = payload.optInt("index", -1);
                 if (target < 1 || target >= reviewTotal()) { reject("That move is not in this game."); return; }
@@ -651,8 +686,10 @@ public final class KnightlineActivity extends ChessLinkActivity {
             case "review.reset": resetReviewWorkspace(); review(); return;
             case "review.try":
                 if (!validReviewPosition(payload)) return;
+                int reviewPieces=MoveFeedback.pieces(reviewWorkspace.position.b);
                 if (reviewWorkspace.play(payload.optInt("from", -1), payload.optInt("to", -1), payload.optInt("promotion", 5))) {
-                    feedback.play(webView, reviewWorkspace.position.winner >= 0 ? "finish" : "move");
+                    reviewExploring=true;
+                    feedback.play(webView,MoveFeedback.cue(reviewPieces,MoveFeedback.pieces(reviewWorkspace.position.b),reviewWorkspace.position.winner));
                     reviewShowBest = false; scheduleReviewEvaluation();
                 } else reject("Choose a legal move for the side to move.");
                 publishState(); return;
@@ -673,7 +710,7 @@ public final class KnightlineActivity extends ChessLinkActivity {
 
     private void resetReviewWorkspace() {
         reviewWorkspace = null; reviewWorkspaceIndex = -1; reviewToken = "";
-        reviewShowBest = false; reviewEvaluation = null; reviewSearchGeneration++;
+        reviewShowBest = false; reviewExploring=false; reviewEvaluatedPosition=null; reviewEvaluation = null; reviewSearchGeneration++;
     }
 
     private void leaveReview() {
@@ -689,6 +726,7 @@ public final class KnightlineActivity extends ChessLinkActivity {
 
     @Override void save() {
         super.save();
+        getSharedPreferences("knightline-endgame",MODE_PRIVATE).edit().putString("session",session).putInt("lesson",endgameLesson).putBoolean("pattern",endgamePattern).apply();
         archiveCurrentGame();
     }
 
@@ -718,7 +756,7 @@ public final class KnightlineActivity extends ChessLinkActivity {
                 copy.analysisBest=new java.util.ArrayList<>(old.game.analysisBest);
             }
             gameArchive.put(new GameArchive.Entry(session, currentPlayer(0), currentPlayer(1),
-                    learnMode ? "Guided lesson" : solo ? "Stockfish" : local ? "Pass & play" : "Friend game",
+                    endgameLesson>=0 ? "Endgame practice" : learnMode ? "Guided lesson" : solo ? "Stockfish" : local ? "Pass & play" : "Friend game",
                     System.currentTimeMillis(), local && !solo ? 0 : me, local && !solo ? -1 : me, copy));
             archiveError = "";
         } catch (Exception error) {
@@ -810,7 +848,8 @@ public final class KnightlineActivity extends ChessLinkActivity {
         if (reviewWorkspace == null || destroyed) return;
         final long generation = ++reviewSearchGeneration;
         final String token = reviewToken;
-        final Game position = reviewWorkspace.position.copy();
+        final Game position = reviewExploring ? reviewWorkspace.position.copy() : reviewPosition(reviewIndex);
+        reviewEvaluatedPosition=position;
         reviewEvaluation = null; reviewEvaluationState = position.winner >= 0 ? "Final position" : "Analyzing…";
         if (position.winner >= 0) return;
         reviewWorker.execute(() -> {
@@ -835,8 +874,8 @@ public final class KnightlineActivity extends ChessLinkActivity {
     }
 
     private String reviewScore() {
-        if (reviewWorkspace == null) return "—";
-        int winner = reviewWorkspace.position.winner;
+        if (reviewEvaluatedPosition == null) return "—";
+        int winner = reviewEvaluatedPosition.winner;
         if (winner == 2) return "0.00";
         if (winner >= 0) return winner == 0 ? "M0" : "−M0";
         if (reviewEvaluation == null) return "…";
@@ -924,7 +963,29 @@ public final class KnightlineActivity extends ChessLinkActivity {
     }
 
     private void beginLesson(JSONObject payload) {
-        beginGuidedLesson(clamp(payload.optInt("lesson", 0), 0, ChessTutor.NAMES.length - 1));
+        int lesson=payload.optInt("lesson",-1),side=payload.optInt("side",0);
+        if(lesson<0||lesson>=ChessTutor.NAMES.length||side<0||side>1){reject("Choose a lesson and White or Black.");return;}
+        replaceSavedChessGame("this guided lesson",()->{pendingLessonSide=side;startGuidedLesson(lesson);});
+    }
+
+    private void beginEndgame(JSONObject payload) {
+        int lesson=payload.optInt("lesson",-1),side=payload.optInt("side",-1);
+        if(lesson<0||lesson>=EndgameLessons.ALL.length||side<0||side>1||!EndgameLessons.ALL[lesson].playable){reject("Choose a playable endgame and a side.");return;}
+        boolean pattern=payload.optBoolean("pattern",false);
+        replaceSavedChessGame("this endgame practice",()->{
+            pendingLessonSide=side;pendingEndgame=lesson;pendingEndgamePattern=pattern;setClockPreset(4);
+            startLocalConfirmed(true,true,2);
+        });
+    }
+
+    @Override boolean isNormalBotGame(){return super.isNormalBotGame() || endgameLesson>=0&&local&&solo&&learnMode&&game!=null&&game.winner<0;}
+    @Override String normalCoachCopy(boolean yourTurn){
+        if(endgameLesson<0||endgameLesson>=EndgameLessons.ALL.length)return super.normalCoachCopy(yourTurn);
+        if(!yourTurn)return "Watch the defender's reply. Keep your pieces protected and avoid stalemate.";
+        String action=normalHintAction(true),cue=EndgameLessons.cue(game,me);
+        if(action.equals("Hide hint")&&hasFreshNormalCoach())return ChessNotation.san(game,coach.move[0],coach.move[1],coach.move[2])+" · "+cue;
+        if(action.equals("Show move")&&hasFreshNormalCoach())return cue+" Look at your "+ChessTutor.pieceName(game,coach.move)+".";
+        return cue+" Tap Read for the method.";
     }
 
     private void moveFromPayload(JSONObject payload) {
@@ -993,6 +1054,8 @@ public final class KnightlineActivity extends ChessLinkActivity {
     }
 
     private void rematch() {
+        if(endgameLesson>=0){beginEndgame(obj("lesson",endgameLesson,"side",me,"pattern",endgamePattern));return;}
+        if(isGuidedLesson()){pendingLessonSide=me;startGuidedLesson(openingLesson);return;}
         if (local) startGame(0); else if (ready) invite(0);
     }
 
@@ -1090,19 +1153,21 @@ public final class KnightlineActivity extends ChessLinkActivity {
     private void publishFeedback() {
         if (state == null || feedback == null) return;
         int seq = state.optInt("seq", -1);
+        int pieces=0;JSONArray board=state.optJSONArray("b");if(board!=null)for(int i=0;i<board.length();i++)if(board.optInt(i)!=0)pieces++;
         String boardState=String.valueOf(state.optJSONArray("b"));
         if (session.equals(feedbackSession) && seq > feedbackSequence && feedbackSequence >= 0 && "game".equals(requestedScreen)) {
             if(state.optInt("winner",-1)>=0) feedback.play(webView,"finish");
-            else if(!boardState.equals(feedbackBoard)) feedback.play(webView,"move");
+            else if(!boardState.equals(feedbackBoard)) feedback.play(webView,MoveFeedback.cue(feedbackPieces,pieces,-1));
         }
-        feedbackSession=session;feedbackSequence=seq;feedbackBoard=boardState;
+        feedbackSession=session;feedbackSequence=seq;feedbackBoard=boardState;feedbackPieces=pieces;
     }
 
     private JSONObject uiState() {
         JSONObject root = obj("screen", requestedScreen, "session", "review".equals(requestedScreen) ? reviewSession() : session,
                 "revision", revision + 1, "transport", transportPayload(), "profile", profilePayload(),
                 "lessons", lessonPayload(), "fontScale", fontScalePercent(), "archive", archivePayload(),
-                "settings", obj("sound", feedback == null || feedback.soundEnabled(), "vibration", feedback == null || feedback.vibrationEnabled()));
+                "settings", obj("sound", feedback == null || feedback.soundEnabled(), "vibration", feedback == null || feedback.vibrationEnabled(),
+                        "vibrationStatus",feedback==null?"":feedback.vibrationStatus()));
         try {
             root.put("match", matchPayload());
             root.put("review", reviewPayload());
@@ -1118,7 +1183,7 @@ public final class KnightlineActivity extends ChessLinkActivity {
 
     private JSONObject matchPayload() {
         if (state == null || state.optInt("id", -1) != 0) return obj("available", false);
-        boolean yourTurn = state.optInt("winner", -1) < 0 && state.optInt("turn", -1) == me;
+        boolean yourTurn = state.optInt("winner", -1) < 0 && state.optInt("turn", -1) == me && !lessonComplete();
         boolean guided = isGuidedLesson();
         boolean normal = isNormalBotGame();
         JSONObject display = state;
@@ -1139,7 +1204,7 @@ public final class KnightlineActivity extends ChessLinkActivity {
             } else if (normal) {
                 String action = normalHintAction(yourTurn);
                 coachPayload.put("kind", "coach");
-                coachPayload.put("heading", "Position coach");
+                coachPayload.put("heading", endgameLesson>=0?EndgameLessons.ALL[endgameLesson].name:"Position coach");
                 coachPayload.put("copy", normalCoachCopy(yourTurn));
                 coachPayload.put("action", action);
                 coachPayload.put("available", yourTurn);
@@ -1164,7 +1229,8 @@ public final class KnightlineActivity extends ChessLinkActivity {
                 : ready ? "Private Knightline room" : "Waiting to reconnect";
         return obj("position", display, "rawPosition", state, "me", me, "turn", state.optInt("turn", -1),
                 "winner", winner, "yourTurn", yourTurn, "local", local, "solo", solo, "ready", ready,
-                "evaluationEnabled", solo,
+                "evaluationEnabled", solo, "lessonComplete", lessonComplete(),
+                "endgame",endgameLesson>=0?obj("name",EndgameLessons.ALL[endgameLesson].name,"method",EndgameLessons.ALL[endgameLesson].steps):JSONObject.NULL,
                 "opponent", opponent, "opponentDetail", opponentDetail,
                 "you", local && !solo ? playerLabel(me) : "You",
                 "youDetail", me == 0 ? "White" : "Black",
@@ -1215,7 +1281,7 @@ public final class KnightlineActivity extends ChessLinkActivity {
             if (index == reviewIndex) notation = san;
         }
         boolean active = reviewWorkspace != null && "review".equals(requestedScreen);
-        boolean variation = active && reviewWorkspace.length() > 0;
+        boolean variation = active && reviewExploring;
         if (active) {
             JSONArray legal = new JSONArray();
             Game shown = reviewWorkspace.position;
@@ -1223,13 +1289,12 @@ public final class KnightlineActivity extends ChessLinkActivity {
             position = obj("b", array(shown.b), "moves", legal, "turn", shown.turn, "winner", shown.winner,
                     "seq", reviewWorkspace.revision);
             try {
+                if (variation) { position.put("lastA", shown.lastA); position.put("lastZ", shown.lastZ); }
                 if (reviewShowBest) {
                     int[] arrow = variation ? (reviewEvaluation == null ? null : reviewEvaluation.move)
                             : best == null || best.length() < 2 ? null : new int[]{best.optInt(0, -1), best.optInt(1, -1)};
                     if (arrow != null) { position.put("bestFrom", arrow[0]); position.put("bestTo", arrow[1]); }
-                } else if (variation) {
-                    position.put("playedFrom", shown.lastA); position.put("playedTo", shown.lastZ); position.put("arrowGrade", "pending");
-                } else if (played != null) {
+                } else if (!variation && played != null) {
                     position.put("playedFrom", played.optInt(0, -1)); position.put("playedTo", played.optInt(1, -1));
                     position.put("arrowGrade", presentation.verdict);
                 }
@@ -1243,6 +1308,7 @@ public final class KnightlineActivity extends ChessLinkActivity {
                 "notation", notation, "timeline", timeline, "analyzed", !report.isEmpty(), "verdict", presentation.verdict,
                 "token", reviewToken, "yourTurn", active && reviewWorkspace.position.winner < 0,
                 "variation", variation, "variationLength", active ? reviewWorkspace.length() : 0,
+                "evaluationLabel",variation?"Current position":"After played move",
                 "variationLine", active ? reviewWorkspace.line() : "", "showBest", reviewShowBest,
                 "canShowBest", variation ? reviewEvaluation != null : best != null && best.length() >= 2,
                 "evaluation", reviewScore(), "evaluationState", reviewEvaluationState,
@@ -1250,9 +1316,9 @@ public final class KnightlineActivity extends ChessLinkActivity {
                 "player", reviewPlayer(playedSide), "mySide", archivedReview != null ? archivedReview.mySide : local && !solo ? -1 : me,
                 "whitePlayer", reviewPlayer(0), "blackPlayer", reviewPlayer(1),
                 "scoreSide", presentation.side,
-                "liveGame", archivedReview == null && state != null && state.optInt("winner", -1) < 0,
+                "liveGame", archivedReview == null && state != null && state.optInt("winner", -1) < 0 && !lessonComplete(),
                 "archived", archivedReview != null,
-                "canPrevious", reviewIndex > 1, "canNext", reviewIndex < total - 1,
+                "canPrevious", variation || reviewIndex > 1, "canNext", variation || reviewIndex < total - 1,
                 "canBranch", false);
     }
 
@@ -1290,7 +1356,7 @@ public final class KnightlineActivity extends ChessLinkActivity {
     private JSONObject lessonPayload() {
         JSONArray lessons = new JSONArray();
         for (int index = 0; index < ChessTutor.NAMES.length; index++) {
-            lessons.put(obj("id", index, "name", ChessTutor.NAMES[index], "intro", ChessTutor.INTRO[index],
+            lessons.put(obj("id", index, "name", ChessTutor.NAMES[index], "intro", ChessTutor.INTRO[index],"introBlack",ChessTutor.BLACK_INTRO[index],
                     "moves", ChessTutor.lessonMoveCount(index)));
         }
         JSONArray puzzles = new JSONArray();
@@ -1301,7 +1367,9 @@ public final class KnightlineActivity extends ChessLinkActivity {
                     "solved", progress.getBoolean(entry.id + ".solved", entry.index < 6 && progress.getBoolean("solved-" + entry.index, false)),
                     "clean", evidence.clean, "assisted", evidence.assisted(), "missed", evidence.assisted()));
         }
-        return obj("items", lessons, "puzzles", puzzles);
+        JSONArray endgames=new JSONArray();
+        for(int i=0;i<EndgameLessons.ALL.length;i++){EndgameLessons.Lesson l=EndgameLessons.ALL[i];endgames.put(obj("id",i,"name",l.name,"verdict",l.verdict,"explanation",l.explanation,"steps",l.steps,"playable",l.playable));}
+        return obj("items", lessons, "puzzles", puzzles,"endgames",endgames);
     }
 
     private void startPuzzle(int index) {
@@ -1329,14 +1397,15 @@ public final class KnightlineActivity extends ChessLinkActivity {
                 if (puzzle.undoMistake()) feedback.play(webView, "move");
                 break;
             case "puzzle.move":
+                int puzzlePieces=MoveFeedback.pieces(puzzle.position.b);
                 if(puzzle.play(payload.optInt("from", -1), payload.optInt("to", -1), payload.optInt("promotion", 5)))
-                    feedback.play(webView, puzzle.failed ? "mistake" : puzzle.solved ? "finish" : "move");
+                    feedback.play(webView, puzzle.failed ? "mistake" : puzzle.solved ? "finish" : MoveFeedback.cue(puzzlePieces,MoveFeedback.pieces(puzzle.position.b),puzzle.position.winner));
                 persistPuzzleProgress();
                 if (puzzle.pendingReply) {
                     final PuzzleSession current = puzzle; final String token = puzzleToken; final long seq = puzzle.revision;
                     handler.postDelayed(() -> {
                         if (destroyed || puzzle != current || !token.equals(puzzleToken) || puzzle.revision != seq) return;
-                        puzzle.reply(); if ("puzzle".equals(requestedScreen)) { feedback.play(webView, "move"); publishState(); }
+                        int before=MoveFeedback.pieces(puzzle.position.b);puzzle.reply(); if ("puzzle".equals(requestedScreen)) { feedback.play(webView,MoveFeedback.cue(before,MoveFeedback.pieces(puzzle.position.b),puzzle.position.winner)); publishState(); }
                     }, 650);
                 }
                 break;

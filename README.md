@@ -9,11 +9,13 @@ The interface is packaged inside the APK and served through Android's `WebViewAs
 - Complete native chess rules: legal move validation, castling, en passant, promotion, checkmate, stalemate, threefold repetition, and the 50-move rule.
 - Bundled Stockfish 16 NNUE for arm64-v8a, armeabi-v7a, and x86_64; Easy, Medium, and Hard bot levels; live numeric evaluation; and post-game review.
 - Offline bot games, pass-and-play, saved/resumed games, clocks, promotion, takebacks, and independent review analysis.
-- Review starts **before** the selected move. Its graded arrow sits behind pieces; Show best is optional. Explore any legal continuation for both sides with live Stockfish scores, Undo and Reset line. Orientation stays fixed. Key moments appear before the collapsible statistics.
+- Review shows the board **before** the selected move, with the numeric score **after that saved move**. Play from here (or selecting a piece) switches to the current analysis position's score. Both sides can explore legal alternatives without automatic arrows; normal last-move highlights remain. Back/Forward first exits the alternative line at the same saved move. Show best is optional, orientation stays fixed, and Next key move never wraps. Highlights includes the evaluation graph above key moments and collapsed statistics.
 - A review-only library automatically keeps the latest 100 played games, separate from the active save. Finished games open Review last game and return Home. Archived analysis cannot replace a match or change its rating.
 - 256 offline puzzles in ascending difficulty: six original warm-ups and 250 multi-move Lichess CC0 positions, from 800–1199 through 2400+. Legal mistakes are played on the board, with an explicit Undo. Hints and mistakes permanently mark that puzzle as practice—even after retries or restarts. Earlier-version completions are preserved as practice because their first-attempt history cannot be verified. Puzzle practice never replaces the saved match.
-- Original short game sounds and gentle native haptics, with independent saved switches and Test feedback in Profile. User-selected modern-knight logo, including an adaptive Android launcher icon.
+- Original dry board-contact/capture sounds and device-tuned heavy-click haptics, with independent saved switches, system-setting diagnostics and Test feedback in Profile. User-selected modern-knight logo, including an adaptive Android launcher icon.
+- Lifted drag pieces follow the pointer with a shadow and touch offset. Engine updates preserve the live board and pointer capture; cancelled, off-board and illegal drops do not commit moves.
 - Progressive coaching for bot play and guided lessons: concept, piece, move arrow, then Hide hint. Hint use clearly changes a game to Practice.
+- Seven opening lessons offer White or Black, side-specific coaching and a finite completed-lesson screen. Seven endgame lessons cover rook, queen, two bishops, bishop + knight, two knights, lone bishop and lone knight against a bare king. Playable lessons offer full Stockfish technique practice or a mate-in-one finishing pattern, as either color. Notes distinguish forced mate, possible-but-not-forced mate, and dead positions.
 - Native-stored Private Skill Rating: starts at 800; K=32 for the first 20 rated games then K=20; local history/deltas; bot anchors 600/1200/1800. It never claims a global ranking or leaderboard.
 - Knightline-only Bluetooth rooms and private PeerJS/WebRTC rooms, with native move validation and local chat.
 - A responsive dark tournament UI with a cool tournament board, original local SVG pieces, clean translucent move arrows, keyboard focus, square labels, safe-area handling, and dynamic-type reflow.
@@ -42,7 +44,7 @@ Keep release-signing files outside the repository; `.gitignore` excludes keystor
 
 ## Validation status
 
-See [v0.5 flow validation](docs/validation-v0.5.0.md) for the current changes and limits. The native CLI suites pass 41,839 checks in total, including legal replay of every packaged puzzle, visible mistakes/Undo, permanent assistance, archive retention/isolation, bridge and rating checks. Another 75 JavaScript assertions cover evaluation-rail orientation and White-perspective scores. These are real test runs, not an empty Gradle/JUnit result.
+See [v0.6 flow validation](docs/validation-v0.6.0.md) for the current changes and limits. The native CLI suites pass 42,182 checks in total, including legal replay of every packaged puzzle, endgame patterns in both colors, visible mistakes/Undo, permanent assistance, archive retention/isolation, bridge and rating checks. Another 277 JavaScript assertions cover evaluation-rail orientation, White-perspective scores and Black-first custom-position notation. These are real test runs, not an empty Gradle/JUnit result.
 
 Prior beta Pixel coverage includes:
 

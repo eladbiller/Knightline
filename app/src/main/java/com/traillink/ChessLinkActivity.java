@@ -804,15 +804,15 @@ public class ChessLinkActivity extends MainActivity {
     }
 
     String lessonCoachCopy(boolean yourTurn, boolean complete) {
-        if (complete) return "You practised: " + ChessTutor.objective(openingLesson);
-        if (!yourTurn) return lessonProgress() + " · Black is playing the planned reply.";
+        if (complete) return "You practised: " + ChessTutor.objective(openingLesson,me);
+        if (!yourTurn) return lessonProgress() + " · " + (me==0?"Black":"White") + " is playing the planned reply.";
         int[] expected = ChessTutor.next(game, openingLesson);
         if (expected == null) return "Lesson complete.";
         if (!lessonFeedback.isEmpty()) return lessonFeedback;
         if (lessonHintStage == 1) return ChessTutor.cue(game, expected);
         if (lessonHintStage == 2) return "Start with the " + ChessTutor.pieceName(game, expected) + " on " + squareName(expected[0]) + ".";
         if (lessonHintStage >= 3) return ChessTutor.briefHint(game, expected);
-        return lessonProgress() + " · Your move. " + ChessTutor.objective(openingLesson);
+        return lessonProgress() + " · Your move. " + ChessTutor.objective(openingLesson,me);
     }
 
     String lessonHintAction() {
