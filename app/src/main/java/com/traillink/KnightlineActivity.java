@@ -104,6 +104,10 @@ public final class KnightlineActivity extends ChessLinkActivity {
     private int pendingLessonSide=-1, pendingEndgame=-1, endgameLesson=-1;
     private boolean pendingEndgamePattern;
     private boolean endgamePattern;
+    private boolean resumeRemotePending;
+    private String sentReviewSession = "";
+    private int sentReviewSequence = -1;
+    private int outgoingRemoteClock = -1;
 
     @Override public void onCreate(Bundle bundle) {
         // MainActivity restores its native save and calls the virtual home().
@@ -394,6 +398,7 @@ public final class KnightlineActivity extends ChessLinkActivity {
     }
 
     @Override public void connected(String name, String address) {
+        sentReviewSession = "";
         super.connected(name, address);
         runOnUiThread(() -> postEvent("transport", transportPayload()));
     }
@@ -438,8 +443,16 @@ public final class KnightlineActivity extends ChessLinkActivity {
                 "messages", messages, "connected", ready));
     }
 
+    @Override void appendChat(String value, boolean incoming) {
+        chats.add(value);
+        while (chats.size() > 100) chats.remove(0);
+        if (incoming) unread++;
+        save();
+        postEvent("chat", obj("messages",new JSONArray(chats),"incoming",incoming));
+    }
+
     @Override void moveList() {
-        boolean liveGame = game != null && game.winner < 0;
+        boolean liveGame = state != null && state.optInt("winner", -1) < 0;
         postEvent("overlay", obj("kind", "moves", "title", "Move history",
                 "subtitle", hasReview() ? (liveGame
                         ? "Explore any played position without leaving your saved game."
@@ -466,8 +479,13 @@ public final class KnightlineActivity extends ChessLinkActivity {
         seen.clear();
         discovered.clear();
         foundDevices.clear();
+        for (BluetoothDevice paired : adapter.getBondedDevices()) {
+            android.bluetooth.BluetoothClass type = paired.getBluetoothClass();
+            if (type == null || type.getMajorDeviceClass() == android.bluetooth.BluetoothClass.Device.Major.PHONE
+                    || type.getMajorDeviceClass() == android.bluetooth.BluetoothClass.Device.Major.UNCATEGORIZED) addDevice(paired);
+        }
         boolean started = adapter.startDiscovery();
-        status = started ? "Scanning for nearby Knightline phones…"
+        status = started ? (foundDevices.isEmpty() ? "Scanning for nearby Knightline phones…" : "Choose your friend's phone. Looking for more nearby…")
                 : "Could not start scanning. Check Bluetooth and Nearby devices permission.";
         postEvent("transport", transportPayload());
     }
@@ -482,6 +500,11 @@ public final class KnightlineActivity extends ChessLinkActivity {
     }
 
     @Override void startGame(int id) {
+        if (!local) {
+            resetFriendLearningState();
+            if (outgoingRemoteClock >= 0) setClockPreset(outgoingRemoteClock);
+            outgoingRemoteClock = -1;
+        }
         navigation.enterGame(requestedScreen, pendingLessonSide >= 0);
         endgameLesson=pendingEndgame;
         endgamePattern=pendingEndgame>=0&&pendingEndgamePattern;
@@ -547,13 +570,81 @@ public final class KnightlineActivity extends ChessLinkActivity {
         }
         String previousSession = session;
         super.message(message);
+        if ("decline".equals(message.optString("type"))) { outgoingRemoteClock = -1; publishState(); }
+        if ("hello".equals(message.optString("type")) && ready && resumeRemotePending && state != null) {
+            resumeRemotePending = false; requestedScreen = "game"; renderGame();
+        }
+        if ("hello".equals(message.optString("type")) && ready) ensureFriendRatingExchange(true);
         if (message != null && "state".equals(message.optString("type"))) {
             // A validated new friend game may open its board. Later peer/engine
             // updates must not navigate away from an archive, puzzle or Home.
             if (state == message && !session.equals(previousSession)) {
+                resetFriendLearningState();
+                usedHint = usedTakeback = usedReviewBranch = false;
+                peerRatingAtStart = ownRatingAtStart = -1; ratingPeerSession = "";
+                persistSessionIntegrityState(); save();
                 leaveReview(); requestedScreen = "game"; renderGame();
             }
             handler.post(this::ensureFriendRatingExchange);
+        }
+    }
+
+    private void resetFriendLearningState() {
+        learnMode = false; openingLesson = -1; endgameLesson = -1; endgamePattern = false;
+        resetGuidedState();
+    }
+
+    @Override void startBluetooth(boolean hosting) {
+        if (!ready && !local && state != null && state.optInt("winner", -1) < 0
+                && !savedPeer.startsWith("peerjs:") && hosting == host) { resumeRemote(); return; }
+        super.startBluetooth(hosting);
+    }
+
+    @Override void startBluetoothConfirmed(boolean hosting) {
+        super.startBluetoothConfirmed(hosting);
+        resetFriendLearningState(); publishState();
+    }
+
+    @Override void beginOnlineConfirmed(boolean hosting, String code) {
+        super.beginOnlineConfirmed(hosting, code);
+        resetFriendLearningState(); publishState();
+    }
+
+    private void resumeRemote() {
+        if (local || state == null || state.optInt("winner", -1) >= 0 || savedPeer.isEmpty()) {
+            reject("There is no unfinished friend game to reconnect."); return;
+        }
+        if (ready) { requestedScreen = "game"; renderGame(); return; }
+        resumeRemotePending = true;
+        if (savedPeer.startsWith("peerjs:")) {
+            String code = savedPeer.substring(7);
+            useOnline();
+            status = "Reconnecting to room " + code + "…";
+            if (host) ((PeerLink) link).hostRoom(code); else ((PeerLink) link).joinRoom(code, "Guest");
+            home();
+        } else { useBluetooth(); prepare(host); }
+    }
+
+    // Clock ticks need only a small state frame. Send the complete replay once
+    // per new position (and on reconnect), so both players have live history
+    // and a saved review even if the connection ends before checkmate.
+    @Override void sendSnapshot() {
+        if (local || !host || !ready || game == null) return;
+        if (game.id != 0) { super.sendSnapshot(); return; }
+        JSONObject snapshot = snapshot(1 - me);
+        try { snapshot.put("reviewCount", game.history.size()); } catch (Exception ignored) { }
+        send(snapshot);
+        if (session.equals(sentReviewSession) && game.seq == sentReviewSequence) return;
+        sentReviewSession = session; sentReviewSequence = game.seq;
+        for (int start=0; start<game.history.size(); start+=10) {
+            JSONArray boards=new JSONArray(),notes=new JSONArray(),analyses=new JSONArray(),played=new JSONArray(),best=new JSONArray();
+            for (int i=start; i<Math.min(start+10,game.history.size()); i++) {
+                boards.put(array(game.history.get(i))); notes.put(game.commentary.get(i));
+                played.put(i>0?array(game.chessMoves.get(i-1)):new JSONArray());
+                best.put(i>0&&i-1<game.analysisBest.size()?array(game.analysisBest.get(i-1)):new JSONArray());
+                analyses.put(i>0&&i-1<game.analysis.size()?game.analysis.get(i-1):"");
+            }
+            send(obj("type","review","session",session,"start",start,"boards",boards,"notes",notes,"analysis",analyses,"played",played,"best",best));
         }
     }
 
@@ -703,7 +794,8 @@ public final class KnightlineActivity extends ChessLinkActivity {
             case "transport.join": startBluetooth(false); return;
             case "transport.scan": scan(); return;
             case "transport.connect": joinNearby(payload); return;
-            case "transport.disconnect": link.close(); ready = false; home(); return;
+            case "transport.resume": resumeRemote(); return;
+            case "transport.disconnect": link.close(); ready = false; status = "Disconnected · game saved"; home(); return;
             case "transport.settings": openBluetoothSettings(); return;
             case "online.host": beginOnlineRoom(true, payload); return;
             case "online.join": beginOnlineRoom(false, payload); return;
@@ -738,6 +830,9 @@ public final class KnightlineActivity extends ChessLinkActivity {
 
     private void archiveCurrentGame() {
         if (gameArchive == null || session == null || session.isEmpty() || state == null || state.optInt("id", -1) != 0) return;
+        // Lessons still have a resumable board and immediate review, but are
+        // teaching sessions rather than matches in the Games library.
+        if (learnMode || endgameLesson >= 0) return;
         try {
             Game source;
             if (local || host) source = game;
@@ -762,7 +857,7 @@ public final class KnightlineActivity extends ChessLinkActivity {
                 copy.analysisBest=new java.util.ArrayList<>(old.game.analysisBest);
             }
             gameArchive.put(new GameArchive.Entry(session, currentPlayer(0), currentPlayer(1),
-                    endgameLesson>=0 ? "Endgame practice" : learnMode ? "Guided lesson" : solo ? "Stockfish" : local ? "Pass & play" : "Friend game",
+                    solo ? "Stockfish" : local ? "Pass & play" : "Friend game",
                     System.currentTimeMillis(), local && !solo ? 0 : me, local && !solo ? -1 : me, copy));
             archiveError = "";
         } catch (Exception error) {
@@ -926,19 +1021,35 @@ public final class KnightlineActivity extends ChessLinkActivity {
             reject("Connect to another Knightline player before setting up a private game.");
             return;
         }
-        setClockPreset(clamp(payload.optInt("clock", 0), 0, 4));
+        if (pendingGame >= 0) { notice("Waiting for your friend's response.", false); return; }
+        // Proposed settings belong to the invitation, never the active clock.
+        outgoingRemoteClock = clamp(payload.optInt("clock", 0), 0, 4);
         invite(0);
         postEvent("transport", transportPayload());
         publishState();
+    }
+
+    @Override void invite(int id) {
+        if (!ready || id != 0) return;
+        if (pendingGame >= 0) { notice("Waiting for your friend's response.", false); return; }
+        pendingGame = id;
+        int proposedClock = outgoingRemoteClock >= 0 ? outgoingRemoteClock : clockPreset();
+        outgoingRemoteClock = proposedClock;
+        send(obj("type", host ? "offer" : "suggest", "game", id, "clock", proposedClock));
+        status = "Invitation sent · waiting for your friend";
+        postEvent("overlay", obj("kind","invitation-wait","title","Waiting for your friend",
+                "subtitle",clockLabel(proposedClock)+" · Your friend can accept or decline on their phone."));
     }
 
     /** Keep invitations inside the single HTML UI rather than opening a native dialog. */
     private void handleRemoteInvitation(JSONObject message) {
         final String type = message.optString("type", "");
         final int gameId = message.optInt("game", -1);
+        final int offeredClock = message.optInt("clock", 0);
         runOnUiThread(() -> {
             boolean validDirection = ("offer".equals(type) && !host) || ("suggest".equals(type) && host);
             if (!ready || !validDirection || gameId != 0) return;
+            if (offeredClock < 0 || offeredClock > 4) { send(obj("type","decline")); return; }
             if (pendingGame >= 0 || incomingRemoteGame >= 0 || pendingConfirmation != null) {
                 send(obj("type", "decline"));
                 return;
@@ -951,8 +1062,11 @@ public final class KnightlineActivity extends ChessLinkActivity {
                 if (!ready || acceptedGame != 0) {
                     notice("That invitation is no longer available.", true);
                 } else if (host) {
+                    outgoingRemoteClock = -1;
+                    setClockPreset(offeredClock);
                     startGame(acceptedGame);
                 } else {
+                    setClockPreset(offeredClock);
                     send(obj("type", "accept", "game", acceptedGame));
                     notice("Game accepted. Your friend is setting up the board.", false);
                 }
@@ -963,7 +1077,7 @@ public final class KnightlineActivity extends ChessLinkActivity {
             };
             String action = host ? "suggests" : "invites you to";
             postEvent("confirm", obj("kind", "confirm", "title", peer + " " + action + " chess",
-                    "subtitle", "Start a private " + clockLabel() + " game with a fresh random side?",
+                    "subtitle", "Play " + clockLabel(offeredClock) + " with " + peer + "? Colors are assigned automatically.",
                     "token", pendingConfirmationToken, "confirmLabel", "Play"));
         });
     }
@@ -1115,11 +1229,16 @@ public final class KnightlineActivity extends ChessLinkActivity {
     }
 
     private void ensureFriendRatingExchange() {
+        ensureFriendRatingExchange(false);
+    }
+
+    private void ensureFriendRatingExchange(boolean reconnect) {
         if (privateRating == null || state == null || local || !ready || state.optInt("id", -1) != 0 || session.isEmpty()) return;
-        if (session.equals(ratingPeerSession)) return;
+        if (session.equals(ratingPeerSession) && !reconnect) return;
+        if (!session.equals(ratingPeerSession)) ownRatingAtStart = privateRating.snapshot().rating;
         ratingPeerSession = session;
-        ownRatingAtStart = privateRating.snapshot().rating;
-        peerRatingAtStart = -1;
+        // The peer frame may arrive before this queued exchange. New-session
+        // handling already reset it; clearing it here loses a valid rating.
         persistSessionIntegrityState();
         send(obj("type", "rating", "session", session, "rating", ownRatingAtStart,
                 "protocol", KNIGHTLINE_PROTOCOL));
@@ -1340,6 +1459,8 @@ public final class KnightlineActivity extends ChessLinkActivity {
     }
 
     private JSONObject clockPayload() {
+        // The guest's old bot/lesson preference is never the remote clock.
+        if (!local && !host && state != null) setClockPreset(state.optInt("clockPreset", 0));
         long white = clockFor(0), black = clockFor(1);
         return obj("white", formatClock(white), "black", formatClock(black), "whiteMs", white,
                 "blackMs", black, "preset", clockLabel(), "active", state == null ? -1 : state.optInt("turn", -1));
@@ -1485,17 +1606,21 @@ public final class KnightlineActivity extends ChessLinkActivity {
             devices.put(obj("index", index, "name", device.getName() == null ? "Nearby phone" : device.getName(),
                     "paired", device.getBondState() == BluetoothDevice.BOND_BONDED));
         }
-        return obj("ready", ready, "hosting", host, "status", status, "peer", peer,
+        return obj("ready", ready, "hosting", host, "status", status, "peer", peer, "inviting", pendingGame >= 0,
                 "kind", savedPeer.startsWith("peerjs:") ? "online" : "bluetooth", "devices", devices);
     }
 
     private JSONArray moveHistory() {
         JSONArray list = new JSONArray();
-        if (game == null) return list;
-        for (int ply = 0; ply < game.chessMoves.size(); ply++) {
-            int[] move = game.chessMoves.get(ply);
+        Game source = game;
+        if (!local && !host && reviewBoards.length() >= 2) {
+            try { source = replayRemotePosition(reviewBoards.length() - 1); } catch (Exception ignored) { return list; }
+        }
+        if (source == null) return list;
+        for (int ply = 0; ply < source.chessMoves.size(); ply++) {
+            int[] move = source.chessMoves.get(ply);
             String notation;
-            try { notation = ChessNotation.san(ChessAnalysis.position(game, ply), move[0], move[1], move[2]); }
+            try { notation = ChessNotation.san(ChessAnalysis.position(source, ply), move[0], move[1], move[2]); }
             catch (Exception ignored) { notation = squareName(move[0]) + "–" + squareName(move[1]); }
             list.put(obj("ply", ply + 1, "move", notation, "side", ply % 2 == 0 ? "White" : "Black"));
         }

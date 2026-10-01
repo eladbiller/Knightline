@@ -139,12 +139,17 @@
     app.dataset.ready = 'true';
     app.setAttribute('aria-busy', 'false');
     const previousPosition=boardPositionKey();
+    const previousSession = model.session;
     const payload = object(event.payload, {});
     applyFontScale(payload.fontScale);
     model.screen = payload.screen || model.screen;
     model.backTarget = payload.backTarget || 'home';
     model.session = payload.session || '';
     model.transport = object(payload.transport, model.transport);
+    if (model.transport.ready && overlay?.kind === 'nearby') { pendingSheetReturn = null; closeOverlay(); }
+    if (overlay?.kind === 'invitation-wait' && !model.transport.inviting || previousSession !== model.session && model.screen === 'game') {
+      pendingSheetReturn = null; closeOverlay();
+    }
     model.profile = object(payload.profile, model.profile);
     model.lessons = object(payload.lessons, model.lessons);
     model.match = payload.match && payload.match.position ? payload.match : null;
@@ -190,9 +195,18 @@
     } else if (event.type === 'transport') {
       model.transport = payload;
       patchHeader();
-      if (overlay && overlay.kind === 'nearby') updateNearbySheet();
+      if (overlay?.kind === 'nearby') {
+        if (payload.ready) { pendingSheetReturn = null; closeOverlay(); }
+        else updateNearbySheet();
+      }
     } else if (event.type === 'notice') {
       toast(payload.message || '', !!payload.error);
+    } else if (event.type === 'chat') {
+      if (overlay?.kind === 'chat') {
+        overlay.payload.messages = payload.messages;
+        const log = sheetScroll.querySelector('.chat-log');
+        if (log) { const holder = document.createElement('div'); holder.innerHTML = chatMarkup(overlay.payload); log.replaceChildren(...holder.querySelector('.chat-log').childNodes); }
+      } else if (payload.incoming) toast('New private message', false);
     } else if (event.type === 'overlay') {
       showNativeOverlay(payload);
     } else if (event.type === 'confirm') {
@@ -239,9 +253,10 @@
     const transport = object(model.transport, {});
     const connected = !!transport.ready;
     const waitingForRoom = !connected && transport.kind === 'online' &&
-      /opening|waiting|connecting|created|join/i.test(String(transport.status || ''));
+      /creating|opening|waiting|connecting|created|join|room .* ready/i.test(String(transport.status || ''));
     const findingNearby = !connected && /scanning|connecting/i.test(String(transport.status || ''));
-    const label = connected ? 'Private room' : waitingForRoom ? 'Room opening…' : findingNearby ? 'Finding friend…' : 'Offline ready';
+    const hostingNearby = !connected && transport.hosting && /room open|waiting/i.test(String(transport.status || ''));
+    const label = connected ? 'Private room' : hostingNearby ? 'Waiting for friend' : waitingForRoom ? 'Room opening…' : findingNearby ? 'Finding friend…' : 'Offline ready';
     if (model.screen === 'puzzle') {
       header.innerHTML = '<div class="header-brand"><button class="header-back" type="button" data-action="nav-learn" aria-label="Back to Learn">' + icon('back') + '</button><p class="brand-word">Puzzle practice</p></div><span class="header-status">Offline</span>';
       return;
@@ -316,8 +331,8 @@
 
   function roomStatusCard(match) {
     const transport = object(model.transport, {});
-    const activelyOpening = transport.kind === 'online' &&
-      /opening|waiting|connecting|created|join/i.test(String(transport.status || ''));
+    const activelyOpening = /creating|opening|waiting|connecting|created|join|room open|room .* ready/i.test(String(transport.status || ''));
+    if (match && !match.local && !transport.ready && match.winner < 0) return '<article class="surface room-status"><p class="eyebrow">Your game is saved</p><h2 class="surface-title">'+(activelyOpening?'Reconnecting…':'Connection interrupted')+'</h2><p class="subtitle">'+escape(activelyOpening?transport.status:'Both players: tap Reconnect to continue the same board.')+'</p><button class="button button--primary" type="button" data-transport="resume">'+(activelyOpening?'Retry reconnect':'Reconnect')+'</button></article>';
     if (match || (!transport.ready && !activelyOpening)) return '';
     const roomName = String(transport.peer || '').trim() || 'Private room';
     if (transport.ready) {
@@ -328,8 +343,8 @@
       return '<article class="surface room-status"><div class="section-heading"><div><p class="eyebrow">Private room connected</p><h2 class="surface-title">' + escape(roomName) + '</h2><p class="subtitle">' + escape(detail) +
         '</p></div><button class="button button--mint button--compact" type="button" data-action="remote-setup">' + escape(action) + '</button></div></article>';
     }
-    return '<article class="surface surface--flat room-status"><p class="eyebrow">Private online room</p><h2 class="surface-title">Waiting for your friend</h2><p class="subtitle">' +
-      escape(transport.status || roomName + ' is opening. Keep Knightline open while your friend joins.') + '</p></article>';
+    return '<article class="surface room-status"><p class="eyebrow">'+(transport.kind==='online'?'Share this room code':'Nearby Bluetooth')+'</p><h2 class="surface-title">'+escape(transport.kind==='online'?roomName:'Waiting for your friend')+'</h2><p class="subtitle">' +
+      escape(transport.status || roomName + ' is opening.') + '</p><p class="body-copy">'+(transport.kind==='online'?'Ask your friend to join using the same room code.':'On the other phone: Nearby game → Join nearby game → select this phone. Keep both apps open.')+'</p></article>';
   }
 
   function quickCard(iconName, title, detail, action) {
@@ -1001,7 +1016,7 @@
   function openTransportMenu() {
     overlay = {kind: 'transport-menu'};
     openSheet('room');
-    sheetScroll.innerHTML = '<div class="sheet-heading"><div><p class="eyebrow">Private multiplayer</p><h2 id="sheet-title" class="sheet-title">Play together</h2><p class="sheet-subtitle">Knightline connects only to another Knightline install.</p></div><button class="icon-button" type="button" data-sheet-close aria-label="Close">' + icon('close') + '</button></div>' +
+    sheetScroll.innerHTML = '<div class="sheet-heading"><div><p class="eyebrow">Nearby · no internet needed</p><h2 id="sheet-title" class="sheet-title">Play with a friend</h2><p class="sheet-subtitle">One phone hosts. The other joins. Choose your clock after connecting.</p></div><button class="icon-button" type="button" data-sheet-close aria-label="Close">' + icon('close') + '</button></div>' +
       '<section class="sheet-section"><button class="button button--primary button--wide" type="button" data-transport="host">Host nearby game</button><button class="button button--wide" type="button" data-transport="join">Join nearby game</button></section>' +
       '<div class="online-note"><span aria-hidden="true">⌁</span><span>Bluetooth works in airplane mode after Android pairing and permission. Both players need Knightline Preview.</span></div>' +
       '<div class="sheet-footer"><button class="button button--quiet" type="button" data-sheet-close>Done</button></div>';
@@ -1010,8 +1025,8 @@
   function openOnlineMenu() {
     overlay = {kind: 'online-menu', code: ''};
     openSheet('room');
-    sheetScroll.innerHTML = '<div class="sheet-heading"><div><p class="eyebrow">Private online room</p><h2 id="sheet-title" class="sheet-title">Invite one friend</h2><p class="sheet-subtitle">Peer-to-peer gameplay. Internet is only needed for signaling and the direct connection.</p></div><button class="icon-button" type="button" data-sheet-close aria-label="Close">' + icon('close') + '</button></div>' +
-      '<section class="sheet-section"><label class="sheet-label" for="room-code">Room code</label><input id="room-code" class="input" maxlength="8" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="E.g. KNIGHT42"></section>' +
+    sheetScroll.innerHTML = '<div class="sheet-heading"><div><p class="eyebrow">Private online room</p><h2 id="sheet-title" class="sheet-title">Invite one friend</h2><p class="sheet-subtitle">Create a room to get a code, or enter your friend’s code to join. Both phones need internet.</p></div><button class="icon-button" type="button" data-sheet-close aria-label="Close">' + icon('close') + '</button></div>' +
+      '<section class="sheet-section"><label class="sheet-label" for="room-code">Your friend’s code · or an optional custom code</label><input id="room-code" class="input" maxlength="8" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="Enter a code to join"></section>' +
       '<section class="sheet-section"><button class="button button--primary button--wide" type="button" data-online="host">Create room</button><button class="button button--wide" type="button" data-online="join">Join room</button></section>' +
       '<div class="online-note"><span aria-hidden="true">◌</span><span>No accounts or public matchmaking. Share the code only with your friend.</span></div>';
   }
@@ -1325,6 +1340,7 @@
       else if (type === 'join') { overlayAction('transport.join', {}, false); }
       else if (type === 'scan') send('transport.scan', {}, false);
       else if (type === 'settings') send('transport.settings', {}, false);
+      else if (type === 'resume') { closeOverlay(); send('transport.resume', {}, false); }
       return;
     }
     const device = event.target.closest('[data-device-index]');
@@ -1335,8 +1351,9 @@
     const online = event.target.closest('[data-online]');
     if (online) {
       const input = document.getElementById('room-code');
-      const code = input ? input.value : '';
+      let code = input ? input.value : '';
       const type = online.dataset.online === 'host' ? 'online.host' : 'online.join';
+      if (type === 'online.host' && !code.trim()) code = Array.from(crypto.getRandomValues(new Uint8Array(6)),n=>'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'[n%32]).join('');
       if (code.replace(/[^a-z0-9]/gi,'').length < 4) { toast('Use a room code with 4 to 8 letters or numbers.', true); input?.focus(); return; }
       pendingSheetReturn = captureSheet();
       closeOverlay();

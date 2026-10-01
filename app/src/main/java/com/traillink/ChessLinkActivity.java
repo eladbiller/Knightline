@@ -1835,6 +1835,8 @@ public class ChessLinkActivity extends MainActivity {
         selectedClock = Math.max(0, Math.min(CLOCK_LABELS.length - 1, clock));
     }
 
+    int clockPreset() { return selectedClock; }
+
     void startLocalConfirmed(boolean againstBot, boolean learn, int level) {
         deferBoardUntilResume = false;
         useBluetooth();

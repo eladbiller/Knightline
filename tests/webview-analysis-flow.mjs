@@ -449,6 +449,9 @@ async function restartApp(){
   await delay(1000);await connect();await wait(`!!document.querySelector('[data-nav="learn"]')`,'restart Home');
 }
 async function lessonPersistenceFlow(){
+  await home();await touch('[data-nav="history"]');
+  const originalIds=await evaluate(`[...document.querySelectorAll('[data-archive-id]')].map(e=>e.dataset.archiveId)`);
+  assert(await evaluate(`[...document.querySelectorAll('.archive-heading .eyebrow')].every(e=>!['guided lesson','endgame practice'].includes(e.innerText.toLowerCase()))`),'Legacy lessons leaked into Games');
   await startLessonUI(0,1);await move(12,28);
   await wait(`document.querySelector('[data-square="45"]').getAttribute('aria-label').includes('knight')`,'White authored reply');
   await home();await restartApp();await touch('[data-action="resume"]',true);
@@ -466,15 +469,17 @@ async function lessonPersistenceFlow(){
   await touch('[data-action="coach-details"]');assert(await evaluate(`document.querySelector('#sheet-scroll').innerText.includes('opposition')`),'Restored method missing');
   adb('shell','input','keyevent','4');await wait(`document.querySelector('#sheet-backdrop').hidden`,'close details');
   await home();await touch('[data-action="nav-history"]',true);
-  const archive=await evaluate(`[...document.querySelectorAll('[data-archive-id]')].find(e=>e.innerText.toLowerCase().includes('endgame practice'))?.dataset.archiveId`);
-  assert(archive,'Custom practice absent from library');await touch(`[data-archive-id="${archive}"]`,true);
-  await wait(`document.querySelector('#bottom-sheet').dataset.sheetKind==='review-overview'`,'archived endgame');
+  assert.deepEqual(await evaluate(`[...document.querySelectorAll('[data-archive-id]')].map(e=>e.dataset.archiveId)`),originalIds,'Lessons changed Games history');
+  await home();await touch('[data-action="resume"]',true);await touch('[data-action="moves"]');await touch('[data-native-action="review.open"]',true);
+  await wait(`document.querySelector('#app').dataset.screen==='review'`,'active endgame review');
+  await touch('[data-action="review-overview"]');
+  await wait(`document.querySelector('#bottom-sheet').dataset.sheetKind==='review-overview'`,'active endgame review');
   adb('shell','input','keyevent','4');await wait(`document.querySelector('#sheet-backdrop').hidden`,'close highlights');
-  assert.equal(await evaluate(`document.querySelectorAll('.piece-svg').length`),3,'Custom archive became standard chess');
+  assert.equal(await evaluate(`document.querySelectorAll('.piece-svg').length`),3,'Custom lesson review became standard chess');
   assert.equal(await evaluate(`document.querySelector('.review-ribbon [data-review-jump="1"] span').innerText`),'1…','Black-first custom review has White move prefix');
   assert.equal(await evaluate(`document.querySelector('.review-ribbon [data-review-jump="2"] span').innerText`),'2.','White reply has wrong full-move number');
-  await evaluated();await layout('archived endgame');await home();
-  console.log('PASS: Black opening, authored continuation, custom endgame/side/method and archived custom review survive process restart');
+  await evaluated();await layout('active endgame review');await home();
+  console.log('PASS: opening/endgame persistence and active review; lessons absent from Games while existing normal games remain');
 }
 async function feedbackFlow(){
   await home();await touch('[data-nav="profile"]');
@@ -537,13 +542,14 @@ async function navigationFlow() {
   await back();await wait(`!!document.querySelector('[data-setup-start]')`,'Back restores setup');
   for(const key of ['clock','level'])assert.equal(await evaluate(`document.querySelector('[data-choice="${key}"][aria-pressed="true"]').dataset.value`),'2','Cancelled setup lost '+key);
   await touch('[data-setup-start]',true);await touch('[data-confirm="cancel"]',true);
-  assert(await evaluate(`!!document.querySelector('[data-setup-start]')`),'Cancel did not restore setup');
+  await wait(`!!document.querySelector('[data-setup-start]')`,'Cancel restores setup');
   await back();await closed();await touch('[data-action="online-menu"]',true);await touch('#room-code',true);
   await wait(`document.activeElement?.id==='room-code'`,'room code keyboard focus');
   adb('shell','input','text','AB');await wait(`document.querySelector('#room-code').value==='AB'`,'typed room code');await touch('[data-online="join"]',true);
   assert.equal(await evaluate(`document.querySelector('#room-code').value`),'AB','Invalid code discarded room input');
   adb('shell','input','text','CDEF');await wait(`document.querySelector('#room-code').value==='ABCDEF'`,'completed room code');
   await touch('[data-online="join"]',true);await touch('[data-confirm="cancel"]',true);
+  await wait(`!!document.querySelector('#room-code')`,'Cancel restores room input');
   assert.equal(await evaluate(`document.querySelector('#room-code').value`),'ABCDEF','Cancelled room lost code');
   await back();if(await evaluate(`document.querySelector('#bottom-sheet').dataset.open==='true'`))await back();await closed();
   await touch('[data-nav="home"]');await touch('[data-action="resume"]',true);await screen('game');
@@ -558,6 +564,7 @@ async function navigationFlow() {
   await back();await closed();await back();await screen('home');
   await touch('[data-nav="learn"]');await category('openings');await checkNav();
   await touch('[data-lesson="0"]',true);await touch('[data-lesson-side="1"]',true);await touch('[data-lesson-start]',true);await touch('[data-confirm="cancel"]',true);
+  await wait(`!!document.querySelector('[data-lesson-side="1"]')`,'Cancel restores lesson side');
   assert.equal(await evaluate(`document.querySelector('[data-lesson-side="1"]').getAttribute('aria-pressed')`),'true','Cancelled lesson lost side');
   await touch('[data-lesson-start]',true);await touch('[data-confirm="accept"]',true);await screen('game');
   await wait(`document.querySelector('.game-name')?.innerText==='Your move'`,'Black opening ready');

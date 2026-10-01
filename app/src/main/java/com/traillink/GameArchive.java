@@ -41,7 +41,9 @@ public final class GameArchive {
             try(ObjectInputStream input=new ObjectInputStream(new FileInputStream(file))) {
                 if(input.readInt()!=1) continue;
                 Entry entry=(Entry)input.readObject();
-                if(valid(entry)&&file.getName().equals(fileName(entry.id))) entries.put(entry.id,entry);
+                // Old versions archived teaching positions. Keep those files
+                // untouched, but exclude them before the match-retention limit.
+                if(valid(entry)&&!isLessonMode(entry.mode)&&file.getName().equals(fileName(entry.id))) entries.put(entry.id,entry);
             } catch(IOException|ClassNotFoundException|RuntimeException ignored) { }
         }
         prune();
@@ -53,6 +55,10 @@ public final class GameArchive {
     }
     private static String fileName(String id) {
         return UUID.nameUUIDFromBytes(id.getBytes(StandardCharsets.UTF_8))+".game";
+    }
+    public static boolean isLessonMode(String mode) {
+        return mode != null && (mode.trim().equalsIgnoreCase("Guided lesson")
+                || mode.trim().equalsIgnoreCase("Endgame practice"));
     }
     public synchronized Entry get(String id) { Entry e=entries.get(id); return e==null?null:e.copy(); }
     public synchronized List<Entry> list() {
@@ -74,6 +80,7 @@ public final class GameArchive {
     }
     public synchronized void put(Entry candidate) throws IOException {
         if(!valid(candidate)) throw new IllegalArgumentException("Not a reviewable chess game");
+        if(isLessonMode(candidate.mode)) return;
         Entry old=entries.get(candidate.id);
         Entry entry=old==null?candidate.copy():new Entry(candidate.id,candidate.white,candidate.black,candidate.mode,
                 old.startedAt,candidate.orientation,candidate.mySide,candidate.game);

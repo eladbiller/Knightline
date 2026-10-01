@@ -402,7 +402,7 @@ button:disabled { cursor: not-allowed; opacity: .48; }
 .app-shell[data-screen="review"] .app-header,
 .app-shell[data-screen="puzzle"] .app-header { margin-bottom: 8px; }
 .play-workspace { height: 100%; min-height: 0; grid-template-rows: auto auto minmax(0, 1fr) auto calc(3rem + 36px) auto; gap: 8px; padding: 0; }
-.review-workspace { height: 100%; min-height: 0; grid-template-rows: auto minmax(0, 1fr) 70px auto calc(3.4rem + 88px) auto; gap: 8px; }
+.review-workspace { height: 100%; min-height: 0; grid-template-rows: auto minmax(0, 1fr) 70px auto auto auto; gap: 8px; }
 .play-workspace .board-stage, .review-workspace .board-stage, .puzzle-workspace .board-stage { min-height: 0; container-type: size; display: grid; place-items: center; }
 .play-workspace .board-layout, .review-workspace .board-layout, .puzzle-workspace .board-layout { width: min(100cqw, 100cqh); }
 .play-workspace .board-layout--evaluated, .review-workspace .board-layout--evaluated { width: min(100cqw, calc(100cqh + 14px)); }
@@ -462,7 +462,7 @@ button:disabled { cursor: not-allowed; opacity: .48; }
 .review-insight--blunder { border-top-color: var(--rose); }
 .review-insight--mistake { border-top-color: #f4a15b; }
 .review-insight--inaccuracy { border-top-color: var(--gold); }
-.insight-reading { flex: 1; min-height: 0; text-align: left; padding: 0; border: 0; background: none; }
+.insight-reading { flex: none; min-height: calc(3.3rem + 6px); text-align: left; padding: 0; border: 0; background: none; }
 .insight-reading .insight-heading { margin-bottom: 6px; }
 .review-coach-actions { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
 .review-coach-actions .button { font-size: .68rem; padding: 8px; min-height: 38px; }
@@ -534,12 +534,12 @@ button:disabled { cursor: not-allowed; opacity: .48; }
   .play-workspace, .review-workspace { gap: 5px; }
   .play-workspace .player-card { min-height: 43px; }
   .play-workspace .game-actions .button { min-height: 53px; }
-  .review-workspace { grid-template-rows: auto minmax(0,1fr) 42px auto calc(2.5rem + 90px) auto; }
+  .review-workspace { grid-template-rows: auto minmax(0,1fr) 42px auto auto auto; }
   .review-position-line .coach-kicker { font-size: .56rem; }
   .review-position-line { min-height: 38px; }
   .review-insight { padding: 8px 10px; gap: 5px; }
   .review-insight .coach-copy { font-size: .73rem; }
-  .review-insight .insight-reading { display: grid; grid-template-columns: minmax(0,1fr) auto; gap: 8px; align-items: start; }
+  .review-insight .insight-reading { min-height: 2.1rem; display: grid; grid-template-columns: minmax(0,1fr) auto; gap: 8px; align-items: start; }
   .review-insight .insight-heading { display: contents; }
   .review-insight .insight-heading .coach-kicker { display: none; }
   .review-insight .detail-link { grid-row: 1; grid-column: 2; }

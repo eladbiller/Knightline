@@ -10,7 +10,7 @@ The interface is packaged inside the APK and served through Android's `WebViewAs
 - Bundled Stockfish 16 NNUE for arm64-v8a, armeabi-v7a, and x86_64; Easy, Medium, and Hard bot levels; live numeric evaluation; and post-game review.
 - Offline bot games, pass-and-play, saved/resumed games, clocks, promotion, takebacks, and independent review analysis.
 - Review shows the board **before** the selected move, with the numeric score **after that saved move**. Play from here (or selecting a piece) switches to the current analysis position's score. Both sides can explore legal alternatives without automatic arrows; normal last-move highlights remain. Back/Forward first exits the alternative line at the same saved move. Show best is optional, orientation stays fixed, and Next key move never wraps. Highlights includes the evaluation graph above key moments and collapsed statistics.
-- A review-only library automatically keeps the latest 100 played games, separate from the active save. Finished games open Review last game and return Home. Archived analysis cannot replace a match or change its rating.
+- A review-only library automatically keeps the latest 100 played games, separate from the active save. Opening/endgame lessons are excluded, including older lesson entries, and never consume the match limit. Lesson resume and immediate review remain available. Finished games open Review last game and return Home. Archived analysis cannot replace a match or change its rating.
 - 256 offline puzzles in ascending difficulty: six original warm-ups and 250 multi-move Lichess CC0 positions, from 800–1199 through 2400+. Legal mistakes are played on the board, with an explicit Undo. Hints and mistakes permanently mark that puzzle as practice—even after retries or restarts. Earlier-version completions are preserved as practice because their first-attempt history cannot be verified. Puzzle practice never replaces the saved match.
 - Offline wooden-board feedback built from Kenney's CC0 wood-impact assets: three placement variations, two-contact captures and softer mistake/finish cues. Independent sound/vibration switches and move/capture previews are available in Profile and directly in the game menu. Board-event vibration uses Android's game/media category, so disabling touch feedback does not disable it; device-wide vibration restrictions and DND still apply. Sound follows media volume. User-selected modern-knight logo, including an adaptive Android launcher icon.
 - Five direct destinations: Home, Play, Learn, Games and Profile. Saved boards are prominent on Home and Play. Learn separates Puzzles, Openings and Endgames. Archive Back returns to Games; lessons return to Learn; live analysis returns to its game. Lists keep their scroll/filter/page, nested menus return to their parent, and cancelling replacement restores setup choices. Android Back from Home leaves the app.
@@ -18,7 +18,7 @@ The interface is packaged inside the APK and served through Android's `WebViewAs
 - Progressive coaching for bot play and guided lessons: concept, piece, move arrow, then Hide hint. Hint use clearly changes a game to Practice.
 - Seven opening lessons offer White or Black, side-specific coaching and a finite completed-lesson screen. Seven endgame lessons cover rook, queen, two bishops, bishop + knight, two knights, lone bishop and lone knight against a bare king. Playable lessons offer full Stockfish technique practice or a mate-in-one finishing pattern, as either color. Notes distinguish forced mate, possible-but-not-forced mate, and dead positions.
 - Native-stored Private Skill Rating: starts at 800; K=32 for the first 20 rated games then K=20; local history/deltas; bot anchors 600/1200/1800. It never claims a global ranking or leaderboard.
-- Knightline-only Bluetooth rooms and private PeerJS/WebRTC rooms, with native move validation and local chat.
+- Knightline-only Bluetooth rooms and private PeerJS/WebRTC rooms, with native move validation and live private chat. Paired phones appear immediately; the device picker closes when connected. Invitations carry the selected clock without changing an existing game. Online Create generates a shareable code if left blank. Reconnect preserves an unfinished friend match. Both phones retain live move history and saved reviews.
 - A responsive dark tournament UI with a cool tournament board, original local SVG pieces, clean translucent move arrows, keyboard focus, square labels, safe-area handling, and dynamic-type reflow.
 
 ## Architecture and security
@@ -45,7 +45,7 @@ Keep release-signing files outside the repository; `.gitignore` excludes keystor
 
 ## Validation status
 
-See [v0.7 flow validation](docs/validation-v0.7.0.md) for the current changes and limits. The native CLI suites pass 42,210 checks in total, including legal replay of every packaged puzzle, endgame patterns in both colors, visible mistakes/Undo, permanent assistance, archive retention/isolation, contextual navigation, bridge and rating checks. Another 277 JavaScript assertions cover evaluation-rail orientation, White-perspective scores and Black-first custom-position notation. These are real test runs, not an empty Gradle/JUnit result.
+See [v0.7.1 flow validation](docs/validation-v0.7.1.md) for the current changes and limits. The native CLI suites pass 42,344 checks in total, including legal replay of every packaged puzzle, endgame patterns in both colors, visible mistakes/Undo, permanent assistance, archive retention/isolation, lesson exclusion, contextual navigation, bridge and rating checks. Another 277 JavaScript assertions cover evaluation-rail orientation, White-perspective scores and Black-first custom-position notation. These are real test runs, not an empty Gradle/JUnit result.
 
 Prior beta Pixel coverage includes:
 
@@ -56,7 +56,7 @@ Prior beta Pixel coverage includes:
 - Dynamic-type reflow at 130%/150%. The v0.3 tests additionally caught and fixed WebView text-only zoom and the narrow-screen setup footer changing height.
 - Airplane-mode launch, resume, coaching, and live Stockfish evaluation with `navigator.onLine` false.
 
-The private online room can create a PeerJS signaling session in the app. A final physical-phone-to-physical-phone online match still needs validation on a network with usable WebRTC relay/direct connectivity. Public PeerJS TURN hostnames did not resolve on the test emulator-to-phone network, so this beta does not claim universal PeerJS connectivity yet. Bluetooth and all local play remain usable offline.
+Real Vivo V2206 and Redmi A2+ tests cover Bluetooth and PeerJS matches, alternating legal moves, captures, out-of-turn rejection, clocks, chat, reconnect, resignation, review and game history. Bluetooth was also tested with both phones in airplane mode, Wi-Fi off and no active network. Setup was tested at 130%/150% phone font scales. PeerJS passed on the same Wi-Fi LAN; separate cellular networks, restrictive NAT and relay availability are not certified. Bluetooth and all local play remain usable offline.
 
 ### Selection regression in v0.2.1
 

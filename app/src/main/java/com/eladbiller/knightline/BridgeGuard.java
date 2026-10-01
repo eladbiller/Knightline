@@ -29,7 +29,7 @@ public final class BridgeGuard {
             "review.open", "review.previous", "review.next", "review.jump",
             "review.try", "review.best", "review.undo", "review.reset", "review.evaluate", "review.explore",
             "transport.host", "transport.join", "transport.scan", "transport.connect",
-            "transport.disconnect", "transport.settings",
+            "transport.disconnect", "transport.settings", "transport.resume",
             "online.host", "online.join", "chat.open", "chat.send", "engine.info"
     )));
 
