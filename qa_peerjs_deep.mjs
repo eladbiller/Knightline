@@ -62,7 +62,7 @@ class CDP {
     throw new Error(`[${this.serial}] Could not find and click selector: ` + selector);
   }
   async typeInput(selector, text) {
-    await this.evaluate(`document.querySelector('${selector}').value = '${text}'; document.querySelector('${selector}').dispatchEvent(new Event('input'));`);
+    await this.evaluate(`document.querySelector('${selector}').value = '${text}'; document.querySelector('${selector}').dispatchEvent(new Event('input', { bubbles: true }));`);
   }
   async tapSquare(index) {
     await this.clickSelector(`[data-square="${index}"]`);
@@ -93,8 +93,12 @@ async function connectToDevice(serial, port) {
 }
 
 async function run() {
-  const hostCdp = await connectToDevice('10ACAD2F63001KS', 9223);
-  const clientCdp = await connectToDevice('TS55QC9PIRCY4XH6', 9224);
+  const hostSerial = process.env.HOST_SERIAL || '10ACAD2F63001KS';
+  const clientSerial = process.env.CLIENT_SERIAL || 'R9WR40475QJ';
+  const hostPort = process.env.HOST_PORT ? parseInt(process.env.HOST_PORT) : 9225;
+  const clientPort = process.env.CLIENT_PORT ? parseInt(process.env.CLIENT_PORT) : 9227;
+  const hostCdp = await connectToDevice(hostSerial, hostPort);
+  const clientCdp = await connectToDevice(clientSerial, clientPort);
   
   await delay(1000);
   console.log("Starting PeerJS Online Room test...");
@@ -108,14 +112,17 @@ async function run() {
   await clientCdp.clickSelector('[data-action="online-menu"]');
   await delay(1000);
   
-  const roomCode = "TESTING1";
+  const roomCode = "PJS" + Math.random().toString(36).substring(2, 7).toUpperCase();
   console.log(`Using online room code: ${roomCode}`);
   
   // Host creates room
   await hostCdp.typeInput('#room-code', roomCode);
   await hostCdp.clickSelector('[data-online="host"]');
-  
-  // Client joins room
+  await delay(2500);
+
+  // Client switches to join tab and joins room
+  await clientCdp.clickSelector('[data-online-tab="join"]');
+  await delay(600);
   await clientCdp.typeInput('#room-code', roomCode);
   await clientCdp.clickSelector('[data-online="join"]');
   

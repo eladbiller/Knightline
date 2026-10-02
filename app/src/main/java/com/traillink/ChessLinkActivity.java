@@ -96,7 +96,6 @@ public class ChessLinkActivity extends MainActivity {
 
     @Override void base(String eyebrow, String title) {
         leaveRts();
-        setRequestedOrientation(android.content.pm.ActivityInfo.SCREEN_ORIENTATION_PORTRAIT);
         getWindow().setStatusBarColor(NIGHT);
         getWindow().setNavigationBarColor(NIGHT);
         getWindow().getDecorView().setSystemUiVisibility(0);
@@ -1121,7 +1120,6 @@ public class ChessLinkActivity extends MainActivity {
         hintButton = null;
         normalCoachCopy = null;
         normalHintButton = null;
-        setRequestedOrientation(android.content.pm.ActivityInfo.SCREEN_ORIENTATION_PORTRAIT);
         getWindow().setStatusBarColor(NIGHT);
         getWindow().setNavigationBarColor(NIGHT);
         getWindow().getDecorView().setSystemUiVisibility(0);
@@ -1418,6 +1416,14 @@ public class ChessLinkActivity extends MainActivity {
         clocksRunning = initial > 0 && game != null && game.winner < 0;
         handler.removeCallbacks(clockLoop);
         if (clocksRunning) handler.postDelayed(clockLoop, 250);
+    }
+
+    @Override void applyLatencyCompensation(long clientTime) {
+        if (clientTime > 0 && clocksRunning && clockTurn == 1 - me) {
+            long now = android.os.SystemClock.elapsedRealtime();
+            long transit = Math.max(0, Math.min(1000L, now - clientTime));
+            clocks[1 - me] += transit;
+        }
     }
 
     void advanceClock() {

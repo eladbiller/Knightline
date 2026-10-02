@@ -190,6 +190,7 @@
     } else if (event.type === 'transport') {
       model.transport = payload;
       patchHeader();
+      if (model.screen === 'game') renderGame();
       if (overlay && overlay.kind === 'nearby') updateNearbySheet();
     } else if (event.type === 'notice') {
       toast(payload.message || '', !!payload.error);
@@ -417,16 +418,22 @@
       // Keep the live board connected: moving it into a new parent would lose
       // pointer capture mid-drag when Stockfish publishes an evaluation.
       const fresh = template.content.firstElementChild;
-      [...existing.children].forEach((child,index) => {
-        if(child.id !== 'board-host') child.replaceWith(fresh.children[index].cloneNode(true));
-      });
-      existing.querySelector('.board-overlay')?.replaceWith(fresh.querySelector('.board-overlay'));
+      const boardHost = existing.querySelector('#board-host');
+      const freshBoardHost = fresh.querySelector('#board-host');
+      const freshOverlay = fresh.querySelector('.board-overlay');
+      if (boardHost && freshBoardHost) {
+        if (freshOverlay) {
+          boardHost.querySelector('.board-overlay')?.replaceWith(freshOverlay);
+        }
+        freshBoardHost.replaceWith(boardHost);
+      }
+      existing.replaceChildren(...fresh.childNodes);
       const rail = existing.querySelector('.eval-rail'), nextRail = fresh.querySelector('.eval-rail');
-      if(rail && nextRail) { rail.setAttribute('aria-label',nextRail.getAttribute('aria-label')); rail.innerHTML=nextRail.innerHTML; }
+      if (rail && nextRail) { rail.setAttribute('aria-label', nextRail.getAttribute('aria-label')); rail.innerHTML = nextRail.innerHTML; }
       refreshBoardOnly();
     } else {
-      cancelBoardDrag(); main.innerHTML=markup;
-      main.querySelector(selector).dataset.positionKey=key;
+      cancelBoardDrag(); main.innerHTML = markup;
+      main.querySelector(selector).dataset.positionKey = key;
       attachBoardInteractions();
     }
   }
@@ -488,8 +495,10 @@
     const position = object(match.position, {});
     const evaluationEnabled = !!match.evaluationEnabled;
     const material = materialBalance(array(position.b));
+    const reconnectBanner = model.transport && model.transport.reconnecting ?
+      '<div class="reconnecting-banner"><span class="status-dot"></span><span>Connection interrupted. Reconnecting (' + (model.transport.reconnectSeconds || 25) + 's)…</span></div>' : '';
     const markup =
-      '<section class="screen screen--game play-workspace"><div class="game-topline"><div><p class="game-name">' + escape(finished ? gameResult(match) : match.lessonComplete ? 'Lesson complete' : match.yourTurn ? 'Your move' : 'Opponent to move') + '</p><span class="game-integrity">' + escape(match.practice || 'Practice') + '</span></div>' +
+      '<section class="screen screen--game play-workspace">' + reconnectBanner + '<div class="game-topline"><div><p class="game-name">' + escape(finished ? gameResult(match) : match.lessonComplete ? 'Lesson complete' : match.yourTurn ? 'Your move' : 'Opponent to move') + '</p><span class="game-integrity">' + escape(match.practice || 'Practice') + '</span></div>' +
       (evaluationEnabled ? '<button class="eval-chip" type="button" data-action="engine-info" aria-label="Stockfish evaluation ' + escape(coach.evaluation || 'not ready') + '. ' + escape(coach.evaluationState || 'Analyzing') + '">' +
       '<span class="eval-label">EVAL</span><span data-evaluation>' + escape(coach.evaluation || '—') + '</span><span class="eval-state">' + escape(coach.evaluationState || 'Analyzing') + '</span></button></div>' +
       '' : '<span class="game-state-pill">' + icon('check') + escape(finished ? 'Complete' : match.yourTurn ? 'Your turn' : 'In play') + '</span></div>') +
@@ -1003,17 +1012,70 @@
     openSheet('room');
     sheetScroll.innerHTML = '<div class="sheet-heading"><div><p class="eyebrow">Private multiplayer</p><h2 id="sheet-title" class="sheet-title">Play together</h2><p class="sheet-subtitle">Knightline connects only to another Knightline install.</p></div><button class="icon-button" type="button" data-sheet-close aria-label="Close">' + icon('close') + '</button></div>' +
       '<section class="sheet-section"><button class="button button--primary button--wide" type="button" data-transport="host">Host nearby game</button><button class="button button--wide" type="button" data-transport="join">Join nearby game</button></section>' +
-      '<div class="online-note"><span aria-hidden="true">⌁</span><span>Bluetooth works in airplane mode after Android pairing and permission. Both players need Knightline Preview.</span></div>' +
+      '<div class="online-note"><span aria-hidden="true">⌁</span><span>Bluetooth works in airplane mode after Android pairing and permission. Both players need Knightline.</span></div>' +
       '<div class="sheet-footer"><button class="button button--quiet" type="button" data-sheet-close>Done</button></div>';
   }
 
-  function openOnlineMenu() {
-    overlay = {kind: 'online-menu', code: ''};
+  let onlineTab = 'host';
+  let hostRoomCode = '';
+
+  function generateRoomCode() {
+    const letters = 'ABCDEFGHJKLMNPQRSTUVWXYZ';
+    const digits = '23456789';
+    let res = '';
+    for (let i = 0; i < 4; i++) res += letters[Math.floor(Math.random() * letters.length)];
+    for (let i = 0; i < 2; i++) res += digits[Math.floor(Math.random() * digits.length)];
+    return res;
+  }
+
+  function openOnlineMenu(tab) {
+    if (tab) onlineTab = tab;
+    if (!hostRoomCode) hostRoomCode = generateRoomCode();
+    overlay = {kind: 'online-menu', tab: onlineTab, code: hostRoomCode};
     openSheet('room');
-    sheetScroll.innerHTML = '<div class="sheet-heading"><div><p class="eyebrow">Private online room</p><h2 id="sheet-title" class="sheet-title">Invite one friend</h2><p class="sheet-subtitle">Peer-to-peer gameplay. Internet is only needed for signaling and the direct connection.</p></div><button class="icon-button" type="button" data-sheet-close aria-label="Close">' + icon('close') + '</button></div>' +
-      '<section class="sheet-section"><label class="sheet-label" for="room-code">Room code</label><input id="room-code" class="input" maxlength="8" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="E.g. KNIGHT42"></section>' +
-      '<section class="sheet-section"><button class="button button--primary button--wide" type="button" data-online="host">Create room</button><button class="button button--wide" type="button" data-online="join">Join room</button></section>' +
-      '<div class="online-note"><span aria-hidden="true">◌</span><span>No accounts or public matchmaking. Share the code only with your friend.</span></div>';
+    renderOnlineMenuContent();
+  }
+
+  function renderOnlineMenuContent() {
+    sheetScroll.innerHTML =
+      '<div class="sheet-heading"><div>' +
+      '<p class="eyebrow">Private online room</p>' +
+      '<h2 id="sheet-title" class="sheet-title">Play with a friend</h2>' +
+      '<p class="sheet-subtitle">Direct peer-to-peer chess. Works across Wi-Fi or mobile data without accounts.</p></div>' +
+      '<button class="icon-button" type="button" data-sheet-close aria-label="Close">' + icon('close') + '</button></div>' +
+      '<nav class="sheet-tabs" role="tablist" aria-label="Online options">' +
+      '<button type="button" role="tab" data-online-tab="host" aria-selected="' + (onlineTab === 'host') + '">Host a game</button>' +
+      '<button type="button" role="tab" data-online-tab="join" aria-selected="' + (onlineTab === 'join') + '">Join a friend</button>' +
+      '</nav>' +
+      (onlineTab === 'host' ? renderHostTab() : renderJoinTab()) +
+      '<div class="online-note"><span aria-hidden="true">◌</span><span>Private and encrypted peer-to-peer connection.</span></div>';
+  }
+
+  function renderHostTab() {
+    return '<section class="sheet-section">' +
+      '<p class="sheet-label">Your room code</p>' +
+      '<div class="room-code-badge">' +
+      '<span class="room-code-value" id="generated-code-display">' + escape(hostRoomCode) + '</span>' +
+      '<div class="room-code-tools">' +
+      '<button class="button button--compact" type="button" data-online-action="randomize" aria-label="Generate new code">🎲 New</button>' +
+      '<button class="button button--compact" type="button" data-online-action="copy" aria-label="Copy code">📋 Copy</button>' +
+      '</div></div>' +
+      '<input type="hidden" id="room-code" value="' + escape(hostRoomCode) + '">' +
+      '<p class="sheet-help">Give this code to your friend to enter on their device.</p>' +
+      '<button class="button button--primary button--wide" type="button" data-online="host">Create room & wait for friend</button>' +
+      '</section>';
+  }
+
+  function renderJoinTab() {
+    return '<section class="sheet-section">' +
+      '<label class="sheet-label" for="room-code">Enter your friend\'s code</label>' +
+      '<div class="room-join-row">' +
+      '<input id="room-code" class="input room-code-input" maxlength="8" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="E.g. ' + escape(hostRoomCode || 'KNIGHT') + '" autofocus>' +
+      '<button class="button button--compact" type="button" data-online-action="paste">Paste</button>' +
+      '</div>' +
+      '<p class="sheet-help">Type the code shown on your friend\'s screen.</p>' +
+      '<button class="button button--primary button--wide" type="button" data-online="join">Join room</button>' +
+      '</section>';
   }
 
   function showNativeOverlay(payload) {
@@ -1332,10 +1394,44 @@
       send('transport.connect', {index: Number(device.dataset.deviceIndex)}, false);
       return;
     }
+    const onlineTabBtn = event.target.closest('[data-online-tab]');
+    if (onlineTabBtn) {
+      onlineTab = onlineTabBtn.dataset.onlineTab;
+      renderOnlineMenuContent();
+      return;
+    }
+    const onlineAction = event.target.closest('[data-online-action]');
+    if (onlineAction) {
+      const act = onlineAction.dataset.onlineAction;
+      if (act === 'randomize') {
+        hostRoomCode = generateRoomCode();
+        renderOnlineMenuContent();
+      } else if (act === 'copy') {
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(hostRoomCode).catch(() => {});
+        }
+        toast('Room code ' + hostRoomCode + ' copied!');
+      } else if (act === 'paste') {
+        if (navigator.clipboard && navigator.clipboard.readText) {
+          navigator.clipboard.readText().then((text) => {
+            const clean = text.trim().toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 8);
+            const input = document.getElementById('room-code');
+            if (input && clean) {
+              input.value = clean;
+              input.dispatchEvent(new Event('input', {bubbles: true}));
+            }
+          }).catch(() => {});
+        }
+      }
+      return;
+    }
     const online = event.target.closest('[data-online]');
     if (online) {
       const input = document.getElementById('room-code');
-      const code = input ? input.value : '';
+      let code = input ? input.value : '';
+      if (!code && online.dataset.online === 'host') {
+        code = hostRoomCode;
+      }
       const type = online.dataset.online === 'host' ? 'online.host' : 'online.join';
       if (code.replace(/[^a-z0-9]/gi,'').length < 4) { toast('Use a room code with 4 to 8 letters or numbers.', true); input?.focus(); return; }
       pendingSheetReturn = captureSheet();

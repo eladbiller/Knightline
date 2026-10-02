@@ -104,6 +104,20 @@ public final class KnightlineActivity extends ChessLinkActivity {
     private int pendingLessonSide=-1, pendingEndgame=-1, endgameLesson=-1;
     private boolean pendingEndgamePattern;
     private boolean endgamePattern;
+    private boolean isReconnecting = false;
+    private long reconnectDeadline = 0;
+    private final Runnable reconnectTimeoutRunnable = () -> {
+        if (isReconnecting) {
+            isReconnecting = false;
+            reconnectDeadline = 0;
+            super.lost();
+            KnightlineMatchService.stop(KnightlineActivity.this);
+            updateScreenAwakeState();
+            notice("Connection timeout • match saved.", false);
+            publishState();
+            postEvent("transport", transportPayload());
+        }
+    };
 
     @Override public void onCreate(Bundle bundle) {
         // MainActivity restores its native save and calls the virtual home().
@@ -394,13 +408,92 @@ public final class KnightlineActivity extends ChessLinkActivity {
     }
 
     @Override public void connected(String name, String address) {
+        if (isReconnecting) {
+            isReconnecting = false;
+            reconnectDeadline = 0;
+            handler.removeCallbacks(reconnectTimeoutRunnable);
+            notice("Reconnected successfully!", false);
+        }
         super.connected(name, address);
+        updateForegroundService();
         runOnUiThread(() -> postEvent("transport", transportPayload()));
     }
 
     @Override public void lost() {
+        if (isReconnecting) {
+            return;
+        }
+        boolean activeMatch = !local && state != null && state.optInt("winner", -1) < 0;
+        if (activeMatch) {
+            ready = false;
+            isReconnecting = true;
+            reconnectDeadline = android.os.SystemClock.elapsedRealtime() + 25000;
+            status = "Connection interrupted • reconnecting…";
+            handler.postDelayed(reconnectTimeoutRunnable, 25000);
+            updateForegroundService();
+            runOnUiThread(() -> {
+                notice("Connection interrupted. Reconnecting (25s)…", false);
+                publishState();
+                postEvent("transport", transportPayload());
+            });
+            if (link instanceof PeerLink && !peerAddress.isEmpty() && peerAddress.startsWith("peerjs:")) {
+                String room = peerAddress.substring("peerjs:".length());
+                if (host) ((PeerLink) link).hostRoom(room);
+                else ((PeerLink) link).joinRoom(room, "Friend");
+            } else if (link != null && !(link instanceof PeerLink)) {
+                if (host) {
+                    link.host();
+                } else if (!peerAddress.isEmpty() && adapter != null && android.bluetooth.BluetoothAdapter.checkBluetoothAddress(peerAddress)) {
+                    try {
+                        BluetoothDevice dev = adapter.getRemoteDevice(peerAddress);
+                        if (dev != null) {
+                            link.join(dev);
+                        }
+                    } catch (Exception ignored) { }
+                }
+            }
+            return;
+        }
+        isReconnecting = false;
+        reconnectDeadline = 0;
+        handler.removeCallbacks(reconnectTimeoutRunnable);
         super.lost();
-        runOnUiThread(() -> postEvent("transport", transportPayload()));
+        KnightlineMatchService.stop(this);
+        updateScreenAwakeState();
+        runOnUiThread(() -> {
+            publishState();
+            postEvent("transport", transportPayload());
+        });
+    }
+
+    private void updateScreenAwakeState() {
+        boolean activeMatch = "game".equals(requestedScreen) && state != null && state.optInt("winner", -1) < 0;
+        runOnUiThread(() -> {
+            if (activeMatch) {
+                getWindow().addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+            } else {
+                getWindow().clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+            }
+        });
+    }
+
+    private void updateForegroundService() {
+        boolean activeOnline = !local && (ready || isReconnecting) && "game".equals(requestedScreen) && state != null && state.optInt("winner", -1) < 0;
+        if (activeOnline) {
+            KnightlineMatchService.start(this);
+        } else {
+            KnightlineMatchService.stop(this);
+        }
+    }
+
+    @Override protected void onPause() {
+        super.onPause();
+        getWindow().clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+    }
+
+    @Override protected void onResume() {
+        super.onResume();
+        updateScreenAwakeState();
     }
 
     @Override void toast(String text) { notice(text, false); }
@@ -408,7 +501,7 @@ public final class KnightlineActivity extends ChessLinkActivity {
     @Override void menu() {
         JSONArray choices = new JSONArray();
         if (inGame && state != null && state.optInt("winner", -1) < 0) {
-            if (isNormalBotGame() && undoPly() >= 0) option(choices, "match.takeback", "Take back move", "Return to your prior decision");
+            if (undoPly() >= 0) option(choices, "match.takeback", "Take back move", "Return to your prior decision");
             option(choices, "match.resign", "Resign game", "End this game and save the result");
         }
         if (game != null || state != null) option(choices, "match.clear", "Clear saved game", "Remove this local saved match");
@@ -422,11 +515,16 @@ public final class KnightlineActivity extends ChessLinkActivity {
     }
 
     @Override void confirm(String title, String message, Runnable yes) {
+        confirm(title, message, yes, null);
+    }
+
+    void confirm(String title, String message, Runnable yes, Runnable no) {
         pendingConfirmationToken = UUID.randomUUID().toString();
         pendingConfirmation = yes;
-        pendingConfirmationCancel = null;
+        pendingConfirmationCancel = no;
         JSONObject payload = obj("kind", "confirm", "title", title, "subtitle", message,
-                "token", pendingConfirmationToken, "confirmLabel", "Continue");
+                "token", pendingConfirmationToken, "confirmLabel", no != null ? "Accept" : "Continue",
+                "cancelLabel", no != null ? "Decline" : "Cancel");
         postEvent("confirm", payload);
     }
 
@@ -545,6 +643,31 @@ public final class KnightlineActivity extends ChessLinkActivity {
             handleRemoteInvitation(message);
             return;
         }
+        if (message != null && "takeback_propose".equals(message.optString("type"))) {
+            String match = message.optString("session", "");
+            if (!match.isEmpty() && match.equals(session) && state != null && state.optInt("winner", -1) < 0) {
+                confirm("Takeback requested", (peer.isEmpty() ? "Opponent" : peer) + " requested to take back their last move. Allow takeback?", () -> {
+                    send(obj("type", "takeback_response", "session", session, "accepted", true));
+                    executeTakebackHandshake();
+                }, () -> {
+                    send(obj("type", "takeback_response", "session", session, "accepted", false));
+                });
+            }
+            return;
+        }
+        if (message != null && "takeback_response".equals(message.optString("type"))) {
+            String match = message.optString("session", "");
+            if (!match.isEmpty() && match.equals(session)) {
+                boolean accepted = message.optBoolean("accepted", false);
+                if (accepted) {
+                    notice("Takeback accepted by " + (peer.isEmpty() ? "opponent" : peer), false);
+                    if (host) executeTakebackHandshake();
+                } else {
+                    notice((peer.isEmpty() ? "Opponent" : peer) + " declined takeback", false);
+                }
+            }
+            return;
+        }
         String previousSession = session;
         super.message(message);
         if (message != null && "state".equals(message.optString("type"))) {
@@ -566,6 +689,9 @@ public final class KnightlineActivity extends ChessLinkActivity {
     }
 
     @Override protected void onDestroy() {
+        handler.removeCallbacks(reconnectTimeoutRunnable);
+        KnightlineMatchService.stop(this);
+        updateScreenAwakeState();
         archiveAnalysisGeneration++;
         if (feedback != null) feedback.close();
         reviewSearchGeneration++;
@@ -703,7 +829,19 @@ public final class KnightlineActivity extends ChessLinkActivity {
             case "transport.join": startBluetooth(false); return;
             case "transport.scan": scan(); return;
             case "transport.connect": joinNearby(payload); return;
-            case "transport.disconnect": link.close(); ready = false; home(); return;
+            case "transport.disconnect":
+                if (isReconnecting) {
+                    isReconnecting = false;
+                    reconnectDeadline = 0;
+                    handler.removeCallbacks(reconnectTimeoutRunnable);
+                }
+                link.close();
+                super.lost();
+                ready = false;
+                KnightlineMatchService.stop(this);
+                updateScreenAwakeState();
+                home();
+                return;
             case "transport.settings": openBluetoothSettings(); return;
             case "online.host": beginOnlineRoom(true, payload); return;
             case "online.join": beginOnlineRoom(false, payload); return;
@@ -908,6 +1046,40 @@ public final class KnightlineActivity extends ChessLinkActivity {
             pendingConfirmationToken = "";
             if (cancel != null) cancel.run();
             notice("Cancelled.", false);
+        }
+    }
+
+    @Override int undoPly() {
+        if (local) return super.undoPly();
+        if (ready && state != null && state.optInt("winner", -1) < 0) {
+            if (host && game != null && !game.chessMoves.isEmpty()) return game.chessMoves.size() - 1;
+            if (!host && state.optInt("seq", 0) > 0) return state.optInt("seq", 0) - 1;
+        }
+        return -1;
+    }
+
+    @Override void undoChess() {
+        if (local) {
+            super.undoChess();
+            return;
+        }
+        if (!ready || state == null || state.optInt("winner", -1) >= 0) return;
+        confirm("Propose takeback?", "Ask opponent to allow taking back the last move?", () -> {
+            send(obj("type", "takeback_propose", "session", session, "from", me));
+            notice("Takeback proposal sent to " + (peer.isEmpty() ? "opponent" : peer) + "…", false);
+        });
+    }
+
+    private void executeTakebackHandshake() {
+        if (host && game != null && !game.chessMoves.isEmpty()) {
+            int targetPly = Math.max(0, game.chessMoves.size() - 1);
+            try {
+                game = ChessTimeline.branch(game, targetPly);
+                usedTakeback = true;
+                showSnapshot();
+            } catch (Exception e) {
+                android.util.Log.e("Knightline", "Takeback branch failed", e);
+            }
         }
     }
 
@@ -1153,6 +1325,8 @@ public final class KnightlineActivity extends ChessLinkActivity {
     private void publishState() {
         if (!uiReady) return;
         publishFeedback();
+        updateScreenAwakeState();
+        updateForegroundService();
         postEvent("state", uiState());
     }
 
@@ -1486,7 +1660,9 @@ public final class KnightlineActivity extends ChessLinkActivity {
                     "paired", device.getBondState() == BluetoothDevice.BOND_BONDED));
         }
         return obj("ready", ready, "hosting", host, "status", status, "peer", peer,
-                "kind", savedPeer.startsWith("peerjs:") ? "online" : "bluetooth", "devices", devices);
+                "kind", savedPeer.startsWith("peerjs:") ? "online" : "bluetooth", "devices", devices,
+                "reconnecting", isReconnecting,
+                "reconnectSeconds", isReconnecting ? Math.max(0, Math.round((reconnectDeadline - android.os.SystemClock.elapsedRealtime()) / 1000f)) : 0);
     }
 
     private JSONArray moveHistory() {

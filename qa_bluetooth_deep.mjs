@@ -208,8 +208,8 @@ async function run() {
       return (tb && !tb.disabled);
     })()
   `);
-  assert(!canTakeback, "Takeback button should be disabled in Bluetooth mode");
-  console.log("Takeback button correctly disabled.");
+  assert(canTakeback, "Takeback button should be enabled in Bluetooth mode via bilateral handshake");
+  console.log("Takeback button correctly enabled for bilateral handshake.");
   
   // Finish Scholar's Mate
   console.log("Executing Scholar's Mate...");
