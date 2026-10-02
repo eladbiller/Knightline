@@ -496,7 +496,7 @@
     const evaluationEnabled = !!match.evaluationEnabled;
     const material = materialBalance(array(position.b));
     const reconnectBanner = model.transport && model.transport.reconnecting ?
-      '<div class="reconnecting-banner"><span class="status-dot"></span><span>Connection interrupted. Reconnecting (' + (model.transport.reconnectSeconds || 25) + 's)…</span></div>' : '';
+      '<div class="reconnecting-banner"><span class="status-dot"></span><span>Connection interrupted. Reconnecting (' + (model.transport.reconnectSeconds || 25) + 's)…</span><button class="banner-action-button" type="button" data-native-action="transport.disconnect">Cancel</button></div>' : '';
     const markup =
       '<section class="screen screen--game play-workspace">' + reconnectBanner + '<div class="game-topline"><div><p class="game-name">' + escape(finished ? gameResult(match) : match.lessonComplete ? 'Lesson complete' : match.yourTurn ? 'Your move' : 'Opponent to move') + '</p><span class="game-integrity">' + escape(match.practice || 'Practice') + '</span></div>' +
       (evaluationEnabled ? '<button class="eval-chip" type="button" data-action="engine-info" aria-label="Stockfish evaluation ' + escape(coach.evaluation || 'not ready') + '. ' + escape(coach.evaluationState || 'Analyzing') + '">' +

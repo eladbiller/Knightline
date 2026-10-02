@@ -106,10 +106,46 @@ public final class KnightlineActivity extends ChessLinkActivity {
     private boolean endgamePattern;
     private boolean isReconnecting = false;
     private long reconnectDeadline = 0;
+    private final Runnable reconnectCountdownRunnable = new Runnable() {
+        @Override public void run() {
+            if (!isReconnecting || ready) return;
+            postEvent("transport", transportPayload());
+            handler.postDelayed(this, 1000);
+        }
+    };
+    private final Runnable reconnectRetryRunnable = new Runnable() {
+        @Override public void run() {
+            if (!isReconnecting || ready || link == null) return;
+            long remaining = reconnectDeadline - android.os.SystemClock.elapsedRealtime();
+            if (remaining <= 0) return;
+            if (link instanceof PeerLink && !peerAddress.isEmpty() && peerAddress.startsWith("peerjs:")) {
+                String room = peerAddress.substring("peerjs:".length());
+                if (!host) {
+                    ((PeerLink) link).joinRoom(room, "Friend");
+                }
+            } else if (link != null && !(link instanceof PeerLink)) {
+                if (host) {
+                    if (link.server == null && !link.connected) {
+                        link.host();
+                    }
+                } else if (!link.connected && link.socket == null && !peerAddress.isEmpty() && adapter != null && android.bluetooth.BluetoothAdapter.checkBluetoothAddress(peerAddress)) {
+                    try {
+                        BluetoothDevice dev = adapter.getRemoteDevice(peerAddress);
+                        if (dev != null) {
+                            link.join(dev);
+                        }
+                    } catch (Exception ignored) { }
+                }
+            }
+            handler.postDelayed(this, 5000);
+        }
+    };
     private final Runnable reconnectTimeoutRunnable = () -> {
         if (isReconnecting) {
             isReconnecting = false;
             reconnectDeadline = 0;
+            handler.removeCallbacks(reconnectRetryRunnable);
+            handler.removeCallbacks(reconnectCountdownRunnable);
             super.lost();
             KnightlineMatchService.stop(KnightlineActivity.this);
             updateScreenAwakeState();
@@ -412,10 +448,13 @@ public final class KnightlineActivity extends ChessLinkActivity {
             isReconnecting = false;
             reconnectDeadline = 0;
             handler.removeCallbacks(reconnectTimeoutRunnable);
+            handler.removeCallbacks(reconnectRetryRunnable);
+            handler.removeCallbacks(reconnectCountdownRunnable);
             notice("Reconnected successfully!", false);
         }
         super.connected(name, address);
         updateForegroundService();
+        updateScreenAwakeState();
         runOnUiThread(() -> postEvent("transport", transportPayload()));
     }
 
@@ -423,40 +462,33 @@ public final class KnightlineActivity extends ChessLinkActivity {
         if (isReconnecting) {
             return;
         }
-        boolean activeMatch = !local && state != null && state.optInt("winner", -1) < 0;
+        boolean activeMatch = !local && ("game".equals(requestedScreen) || "review".equals(requestedScreen))
+                && state != null && state.optInt("winner", -1) < 0;
         if (activeMatch) {
             ready = false;
             isReconnecting = true;
             reconnectDeadline = android.os.SystemClock.elapsedRealtime() + 25000;
             status = "Connection interrupted • reconnecting…";
+            handler.removeCallbacks(reconnectTimeoutRunnable);
+            handler.removeCallbacks(reconnectRetryRunnable);
+            handler.removeCallbacks(reconnectCountdownRunnable);
             handler.postDelayed(reconnectTimeoutRunnable, 25000);
             updateForegroundService();
+            updateScreenAwakeState();
             runOnUiThread(() -> {
                 notice("Connection interrupted. Reconnecting (25s)…", false);
                 publishState();
                 postEvent("transport", transportPayload());
             });
-            if (link instanceof PeerLink && !peerAddress.isEmpty() && peerAddress.startsWith("peerjs:")) {
-                String room = peerAddress.substring("peerjs:".length());
-                if (host) ((PeerLink) link).hostRoom(room);
-                else ((PeerLink) link).joinRoom(room, "Friend");
-            } else if (link != null && !(link instanceof PeerLink)) {
-                if (host) {
-                    link.host();
-                } else if (!peerAddress.isEmpty() && adapter != null && android.bluetooth.BluetoothAdapter.checkBluetoothAddress(peerAddress)) {
-                    try {
-                        BluetoothDevice dev = adapter.getRemoteDevice(peerAddress);
-                        if (dev != null) {
-                            link.join(dev);
-                        }
-                    } catch (Exception ignored) { }
-                }
-            }
+            handler.postDelayed(reconnectRetryRunnable, 4000);
+            reconnectCountdownRunnable.run();
             return;
         }
         isReconnecting = false;
         reconnectDeadline = 0;
         handler.removeCallbacks(reconnectTimeoutRunnable);
+        handler.removeCallbacks(reconnectRetryRunnable);
+        handler.removeCallbacks(reconnectCountdownRunnable);
         super.lost();
         KnightlineMatchService.stop(this);
         updateScreenAwakeState();
@@ -467,7 +499,9 @@ public final class KnightlineActivity extends ChessLinkActivity {
     }
 
     private void updateScreenAwakeState() {
-        boolean activeMatch = "game".equals(requestedScreen) && state != null && state.optInt("winner", -1) < 0;
+        boolean activeMatch = ("game".equals(requestedScreen) || "review".equals(requestedScreen))
+                && state != null && state.optInt("winner", -1) < 0
+                && (local || ready || isReconnecting);
         runOnUiThread(() -> {
             if (activeMatch) {
                 getWindow().addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
@@ -478,7 +512,9 @@ public final class KnightlineActivity extends ChessLinkActivity {
     }
 
     private void updateForegroundService() {
-        boolean activeOnline = !local && (ready || isReconnecting) && "game".equals(requestedScreen) && state != null && state.optInt("winner", -1) < 0;
+        boolean activeOnline = !local && (ready || isReconnecting)
+                && ("game".equals(requestedScreen) || "review".equals(requestedScreen))
+                && state != null && state.optInt("winner", -1) < 0;
         if (activeOnline) {
             KnightlineMatchService.start(this);
         } else {
@@ -500,13 +536,13 @@ public final class KnightlineActivity extends ChessLinkActivity {
 
     @Override void menu() {
         JSONArray choices = new JSONArray();
-        if (inGame && state != null && state.optInt("winner", -1) < 0) {
+        if (inGame && state != null && state.optInt("winner", -1) < 0 && (local || ready) && !isReconnecting) {
             if (undoPly() >= 0) option(choices, "match.takeback", "Take back move", "Return to your prior decision");
             option(choices, "match.resign", "Resign game", "End this game and save the result");
         }
         if (game != null || state != null) option(choices, "match.clear", "Clear saved game", "Remove this local saved match");
         if (ready && !local) option(choices, "chat.open", "Private chat", "Message the connected Knightline player");
-        if (ready) option(choices, "transport.disconnect", "Disconnect", "Leave this private room");
+        if (ready || isReconnecting) option(choices, "transport.disconnect", "Disconnect", "Leave this private room");
         option(choices, "engine.info", "Stockfish engine", "Offline engine, license and source notice");
         option(choices, "transport.settings", "Bluetooth setup", "Pair and discover a nearby Knightline phone");
         JSONObject payload = obj("kind", "menu", "title", "Game menu",
@@ -628,6 +664,25 @@ public final class KnightlineActivity extends ChessLinkActivity {
         if (android.os.Looper.myLooper() != android.os.Looper.getMainLooper()) {
             runOnUiThread(() -> message(message)); return;
         }
+        if (message != null && ("disconnect".equals(message.optString("type"))
+                || "leave".equals(message.optString("type")))) {
+            android.util.Log.i("Knightline", "Peer sent disconnect - exiting match immediately");
+            if (isReconnecting) {
+                isReconnecting = false;
+                reconnectDeadline = 0;
+                handler.removeCallbacks(reconnectTimeoutRunnable);
+                handler.removeCallbacks(reconnectRetryRunnable);
+                handler.removeCallbacks(reconnectCountdownRunnable);
+            }
+            notice((peer.isEmpty() ? "Opponent" : peer) + " left the room • match saved.", false);
+            if (link != null) link.close();
+            super.lost();
+            ready = false;
+            KnightlineMatchService.stop(this);
+            updateScreenAwakeState();
+            home();
+            return;
+        }
         if (message != null && "rating".equals(message.optString("type"))) {
             String match = message.optString("session", "");
             int rating = message.optInt("rating", -1);
@@ -668,12 +723,57 @@ public final class KnightlineActivity extends ChessLinkActivity {
             }
             return;
         }
+        if (message != null && "hello".equals(message.optString("type"))) {
+            if (message.optInt("version") != protocolVersion()) {
+                link.close(); ready = false;
+                status("Version mismatch • install the same APK on both phones");
+                return;
+            }
+            if (!savedPeer.isEmpty() && !savedPeer.equals(peerAddress)) {
+                link.close(); ready = false;
+                status("Different phone • clear the previous match first");
+                return;
+            }
+            ready = true;
+            status = "Connected to " + (peer.isEmpty() ? "Friend" : peer);
+            if (isReconnecting) {
+                isReconnecting = false;
+                reconnectDeadline = 0;
+                handler.removeCallbacks(reconnectTimeoutRunnable);
+                handler.removeCallbacks(reconnectRetryRunnable);
+                handler.removeCallbacks(reconnectCountdownRunnable);
+                notice("Reconnected successfully!", false);
+            }
+            if (host && game != null) {
+                showSnapshot();
+            } else if (!host && ("game".equals(requestedScreen) || "review".equals(requestedScreen))) {
+                requestedScreen = "game";
+                renderGame();
+            } else if (!host && state != null && state.optInt("winner", -1) < 0) {
+                notice("Reconnected to match • return to Play to resume", false);
+            } else {
+                if (host) send(obj("type", "room"));
+                home();
+            }
+            publishState();
+            postEvent("transport", transportPayload());
+            return;
+        }
         String previousSession = session;
         super.message(message);
         if (message != null && "state".equals(message.optString("type"))) {
-            // A validated new friend game may open its board. Later peer/engine
+            if (isReconnecting) {
+                isReconnecting = false;
+                reconnectDeadline = 0;
+                handler.removeCallbacks(reconnectTimeoutRunnable);
+                handler.removeCallbacks(reconnectRetryRunnable);
+                handler.removeCallbacks(reconnectCountdownRunnable);
+                notice("Reconnected successfully!", false);
+            }
+            // A validated new friend game or reconnected match opens its board. Later peer/engine
             // updates must not navigate away from an archive, puzzle or Home.
-            if (state == message && !session.equals(previousSession)) {
+            boolean shouldShowGame = "game".equals(requestedScreen) || "review".equals(requestedScreen) || !session.equals(previousSession);
+            if (state == message && shouldShowGame) {
                 leaveReview(); requestedScreen = "game"; renderGame();
             }
             handler.post(this::ensureFriendRatingExchange);
@@ -690,6 +790,8 @@ public final class KnightlineActivity extends ChessLinkActivity {
 
     @Override protected void onDestroy() {
         handler.removeCallbacks(reconnectTimeoutRunnable);
+        handler.removeCallbacks(reconnectRetryRunnable);
+        handler.removeCallbacks(reconnectCountdownRunnable);
         KnightlineMatchService.stop(this);
         updateScreenAwakeState();
         archiveAnalysisGeneration++;
@@ -834,12 +936,27 @@ public final class KnightlineActivity extends ChessLinkActivity {
                     isReconnecting = false;
                     reconnectDeadline = 0;
                     handler.removeCallbacks(reconnectTimeoutRunnable);
+                    handler.removeCallbacks(reconnectRetryRunnable);
+                    handler.removeCallbacks(reconnectCountdownRunnable);
                 }
-                link.close();
-                super.lost();
-                ready = false;
-                KnightlineMatchService.stop(this);
-                updateScreenAwakeState();
+                if (ready && link != null) {
+                    try {
+                        send(obj("type", "disconnect", "session", session));
+                    } catch (Exception ignored) { }
+                    ready = false;
+                    handler.postDelayed(() -> {
+                        if (link != null) link.close();
+                        super.lost();
+                        KnightlineMatchService.stop(KnightlineActivity.this);
+                        updateScreenAwakeState();
+                    }, 400);
+                } else {
+                    ready = false;
+                    if (link != null) link.close();
+                    super.lost();
+                    KnightlineMatchService.stop(KnightlineActivity.this);
+                    updateScreenAwakeState();
+                }
                 home();
                 return;
             case "transport.settings": openBluetoothSettings(); return;
@@ -1239,9 +1356,21 @@ public final class KnightlineActivity extends ChessLinkActivity {
 
     private void requestClearSaved() {
         confirm("Clear saved game?", "This removes the local saved match and disconnects this phone.", () -> {
-            link.close();
+            if (isReconnecting) {
+                isReconnecting = false;
+                reconnectDeadline = 0;
+                handler.removeCallbacks(reconnectTimeoutRunnable);
+                handler.removeCallbacks(reconnectRetryRunnable);
+                handler.removeCallbacks(reconnectCountdownRunnable);
+            }
+            if (ready && link != null) {
+                try { send(obj("type", "disconnect", "session", session)); } catch (Exception ignored) { }
+            }
+            if (link != null) link.close();
             ready = false; game = null; state = null; local = solo = false;
             session = savedPeer = ""; peer = ""; peerAddress = "";
+            KnightlineMatchService.stop(this);
+            updateScreenAwakeState();
             save(); home();
         });
     }

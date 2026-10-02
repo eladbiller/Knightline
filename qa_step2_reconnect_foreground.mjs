@@ -138,7 +138,7 @@ async function run() {
   await clientCdp.clickSelector('[data-action="online-menu"]');
   await delay(1000);
 
-  const roomCode = "FGSREC01";
+  const roomCode = "REC" + Math.random().toString(36).substring(2, 6).toUpperCase();
   console.log(`Hosting room: ${roomCode}`);
   await hostCdp.typeInput('#room-code', roomCode);
   await hostCdp.clickSelector('[data-online="host"]');
@@ -196,13 +196,37 @@ async function run() {
   console.log("Move 1 confirmed received on both devices.");
   await delay(1000);
 
-  // 3. Disconnect Client via game-menu -> Disconnect
-  console.log("Client opening game menu...");
-  await clientCdp.clickSelector('[data-action="game-menu"]');
-  await delay(1000);
-  console.log("Client clicking Disconnect option...");
-  await clientCdp.clickSelector('[data-native-action="transport.disconnect"]');
-  await delay(1500);
+  // 3. Connect to Client's peer-bridge.html to simulate network drop
+  const clientTargets = await (await fetch(`http://127.0.0.1:${PORT_CLIENT}/json/list`)).json();
+  const clientBridgePage = clientTargets.find(t => t.url && t.url.includes('peer-bridge.html'));
+  assert(clientBridgePage, "Could not find Client peer-bridge.html target!");
+  const clientBridgeCdp = new CDP(SERIAL_CLIENT);
+  await clientBridgeCdp.open(clientBridgePage.webSocketDebuggerUrl);
+
+  console.log("Simulating transient connection drop by closing DataChannel on Client bridge...");
+  const clientBridgeState = await clientBridgeCdp.evaluate(`
+    (function() {
+      return {
+        typeofConnection: typeof connection,
+        hasConnection: typeof connection !== 'undefined' && !!connection,
+        isOpen: typeof connection !== 'undefined' && connection ? connection.open : false,
+        typeofPeer: typeof peer,
+        hasPeer: typeof peer !== 'undefined' && !!peer
+      };
+    })()
+  `);
+  console.log("Client bridge state before close:", clientBridgeState);
+  await clientBridgeCdp.evaluate(`
+    (function() {
+      if (typeof connection !== 'undefined' && connection) {
+        connection.close();
+      }
+      if (typeof closeRoom === 'function') {
+        closeRoom();
+      }
+    })()
+  `);
+  await delay(600);
 
   // 4. Assert Host enters reconnect grace period with banner
   console.log("Asserting Host displays auto-reconnect grace banner (25s window)...");
@@ -223,21 +247,79 @@ async function run() {
       })()
     `);
     console.log(`[${Math.round((Date.now() - startWait)/1000)}s] Host Reconnect State:`, hasBannerOrNotice);
-    if (hasBannerOrNotice.hasBanner || hasBannerOrNotice.bodyHasReconnecting) break;
+    if (hasBannerOrNotice.hasBanner) break;
     await delay(1000);
   }
-  assert(hasBannerOrNotice.hasBanner || hasBannerOrNotice.bodyHasReconnecting,
-    "Host did NOT enter reconnect grace period or show reconnect banner!");
+  assert(hasBannerOrNotice.hasBanner,
+    "Host did NOT show reconnect banner on sudden drop!");
   console.log("PASS: Reconnecting banner and 25s grace window correctly active on Host!");
+
+  // Verify interactive Cancel button exists on banner
+  const hasCancelBtn = await hostCdp.evaluate(`!!document.querySelector('.banner-action-button')`);
+  assert(hasCancelBtn, "Reconnect banner should have interactive Cancel button!");
+  console.log("PASS: Reconnect banner contains interactive Cancel button!");
 
   // Verify Foreground Service is STILL active on Host during grace period
   const fgsDuringGrace = adb(SERIAL_HOST, 'shell', 'dumpsys', 'activity', 'services', 'com.traillink.KnightlineMatchService');
   assert(fgsDuringGrace.includes('KnightlineMatchService'), "Foreground service should remain active during grace period!");
   console.log("PASS: KnightlineMatchService stayed active during reconnect grace period!");
 
+  // 5. Test automatic reconnection recovery: Native Android reconnectRetryRunnable re-joins automatically!
+  console.log("Waiting for native Android reconnectRetryRunnable to automatically recover connection...");
+  
+  // Wait for reconnect to succeed and banner to clear
+  console.log("Waiting for Host to clear reconnect banner upon successful reconnection...");
+  let reconnected = false;
+  const reconWait = Date.now();
+  while (Date.now() - reconWait < 20000) {
+    const bannerCleared = await hostCdp.evaluate(`!document.querySelector('.reconnecting-banner')`);
+    if (bannerCleared) {
+      reconnected = true;
+      break;
+    }
+    await delay(1000);
+  }
+  assert(reconnected, "Host banner was not cleared after reconnection!");
+  console.log("PASS: Successfully reconnected! Reconnect banner cleared.");
+  await delay(1500);
+
+  // 6. Verify game is fully playable after reconnection: Black plays Move 2 (e5)!
+  console.log("Black plays Move 2 (e5) after reconnection...");
+  await blackCdp.tapSquare(12);
+  await delay(600);
+  await blackCdp.tapSquare(28);
+  await delay(1000);
+  await whiteCdp.assertPiece(28, "Black pawn");
+  console.log("PASS: Move 2 synced and verified on both devices after reconnect!");
+
+  // 7. Test symmetric voluntary disconnect: Client clicks Disconnect
+  console.log("Testing voluntary disconnect: Client opens menu and clicks Disconnect...");
+  await clientCdp.clickSelector('[data-action="game-menu"]');
+  await delay(600);
+  await clientCdp.clickSelector('[data-native-action="transport.disconnect"]');
+  // Assert BOTH devices returned to Home immediately without any 25s waiting freeze!
+  let hostHome = null;
+  let clientHome = null;
+  const startHomeWait = Date.now();
+  while (Date.now() - startHomeWait < 5000) {
+    clientHome = await clientCdp.evaluate(`document.querySelector('.app-shell')?.getAttribute('data-screen')`);
+    hostHome = await hostCdp.evaluate(`document.querySelector('.app-shell')?.getAttribute('data-screen')`);
+    if (clientHome === 'home' && hostHome === 'home') break;
+    await delay(500);
+  }
+  console.log(`Screen after voluntary disconnect: Host=${hostHome}, Client=${clientHome}`);
+  assert(clientHome === 'home', "Client did not return to Home on voluntary disconnect!");
+  assert(hostHome === 'home', "Host did not return to Home on voluntary disconnect!");
+  console.log("PASS: Both devices cleanly and immediately exited to Home upon voluntary disconnect!");
+
+  const fgsAfterDisconnect = adb(SERIAL_HOST, 'shell', 'dumpsys', 'activity', 'services', 'com.traillink.KnightlineMatchService');
+  assert(!fgsAfterDisconnect.includes('KnightlineMatchService'), "Foreground service should be stopped after disconnect!");
+  console.log("PASS: Foreground service stopped cleanly.");
+
   hostCdp.close();
   clientCdp.close();
-  console.log("\nSpecific Test 5 (Foreground Service & Auto-Reconnect): PASSED");
+  clientBridgeCdp.close();
+  console.log("\nSpecific Test 5 (Full Interruption, Reconnect, Move Sync & Clean Disconnect): ALL PASSED!");
   process.exit(0);
 }
 
