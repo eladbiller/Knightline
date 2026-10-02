@@ -3,13 +3,18 @@ import {execFileSync, spawn} from 'node:child_process';
 import {pathToFileURL} from 'node:url';
 export const delay=ms=>new Promise(r=>setTimeout(r,ms));
 export class AndroidDevice {
-  constructor(serial,port){this.serial=serial;this.port=port;this.pending=new Map();this.id=0;}
+  constructor(serial,port){this.serial=serial;this.port=port;this.appId=process.env.APP_ID||'com.eladbiller.knightline';this.pending=new Map();this.id=0;}
   adb(...args){return execFileSync(process.env.ADB||'adb',['-s',this.serial,...args],{encoding:'utf8',timeout:60000}).trim();}
   async connect(){
-    const pid=this.adb('shell','pidof','com.eladbiller.knightline');
+    let pid;const startDeadline=Date.now()+20000;
+    while(!pid&&Date.now()<startDeadline){try{pid=this.adb('shell','pidof',this.appId);}catch{}if(!pid)await delay(250);}
+    if(!pid)throw Error('Knightline process did not start: '+this.serial);
     this.adb('forward','tcp:'+this.port,'localabstract:webview_devtools_remote_'+pid);
-    const pages=await(await fetch(`http://127.0.0.1:${this.port}/json`)).json();
-    const page=pages.find(p=>p.url.endsWith('/ui/index.html'));
+    let page;const deadline=Date.now()+20000;
+    while(!page&&Date.now()<deadline){
+      try{const pages=await(await fetch(`http://127.0.0.1:${this.port}/json`,{signal:AbortSignal.timeout(2000)})).json();page=pages.find(p=>p.url.endsWith('/ui/index.html'));}catch{}
+      if(!page)await delay(250);
+    }
     if(!page)throw Error('No visible Knightline WebView: '+this.serial);
     this.ws=new WebSocket(page.webSocketDebuggerUrl);
     this.ws.addEventListener('message',({data})=>{const m=JSON.parse(data),p=this.pending.get(m.id);if(!p)return;clearTimeout(p.timer);this.pending.delete(m.id);m.error?p.reject(Error(JSON.stringify(m.error))):p.resolve(m.result);});

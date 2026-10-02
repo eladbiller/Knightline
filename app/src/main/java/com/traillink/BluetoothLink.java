@@ -9,7 +9,9 @@ import org.json.JSONObject;
 /** Secure paired RFCOMM; no IP sockets, remote services, or Internet permission. */
 public class BluetoothLink {
  /** Knightline-only RFCOMM endpoint. ChessLink deliberately uses a different UUID. */
- public static final UUID SERVICE=UUID.fromString("c2d6c10c-8171-4f83-b9f3-6e1789e1683f");
+ public static final UUID SERVICE=com.eladbiller.knightline.BuildConfig.APPLICATION_ID.endsWith(".gpt")
+     ?UUID.nameUUIDFromBytes("com.eladbiller.knightline.gpt.bluetooth.v2".getBytes(java.nio.charset.StandardCharsets.UTF_8))
+     :UUID.fromString("c2d6c10c-8171-4f83-b9f3-6e1789e1683f");
  public interface Listener {void connected(String name,String address);void message(JSONObject value);void status(String value);void lost();}
  final BluetoothAdapter adapter;final Listener listener;final ExecutorService writer=Executors.newSingleThreadExecutor();
  volatile BluetoothSocket socket;volatile BluetoothServerSocket server;volatile int generation;volatile boolean connected;

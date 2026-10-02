@@ -10,6 +10,7 @@ public final class NavigationTest {
         equal("exit",n.back("home"));
         for(String tab:new String[]{"play","history","profile","learn"})equal("home",n.back(tab));
         equal("learn",n.back("puzzle"));
+        equal("play",n.back("sandbox"));
         for(String tab:new String[]{"home","play","history"}) {
             n.enterGame(tab,false);equal(tab,n.back("game"));
             n.enterReview(false,true);equal("game",n.back("review"));

@@ -20,6 +20,8 @@ public final class BridgeGuard {
             "ui.ready", "ui.closeOverlay",
             "nav.home", "nav.play", "nav.learn", "nav.profile", "nav.history", "nav.back",
             "archive.open", "settings.feedback", "settings.preview",
+            "sandbox.open", "sandbox.move", "sandbox.undo", "sandbox.edit", "sandbox.cancel",
+            "sandbox.place", "sandbox.turn", "sandbox.rights", "sandbox.apply", "sandbox.clear", "sandbox.reset", "sandbox.flip", "sandbox.import", "sandbox.evaluate",
             "confirm.accept", "confirm.cancel",
             "match.startBot", "match.startPass", "match.resume", "match.move",
             "match.takeback", "match.resign", "match.rematch", "match.retryBot",

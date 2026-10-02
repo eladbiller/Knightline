@@ -144,6 +144,7 @@ public final class PeerLink extends BluetoothLink {
     }
 
     public void hostRoom(String room) {
+        generation++;
         intentionallyClosed = false;
         connected = false;
         pending = command("type", "host", "room", room);
@@ -151,6 +152,7 @@ public final class PeerLink extends BluetoothLink {
     }
 
     public void joinRoom(String room, String name) {
+        generation++;
         intentionallyClosed = false;
         connected = false;
         pending = command("type", "join", "room", room, "name", name);
@@ -181,6 +183,10 @@ public final class PeerLink extends BluetoothLink {
 
     private void post(JSONObject command) {
         if (port == null || command == null) return;
+        try {
+            command.put("epoch", generation);
+            command.put("namespace",BuildConfig.APPLICATION_ID.endsWith(".gpt")?"knightline-gpt-v2-":"knightline-v2-");
+        } catch (Exception ignored) { }
         web.post(() -> {
             try { if (port != null) port.postMessage(new WebMessage(command.toString())); }
             catch (Exception ignored) { }
@@ -191,6 +197,7 @@ public final class PeerLink extends BluetoothLink {
         if (raw == null || raw.length() > 65536) return;
         try {
             JSONObject event = new JSONObject(raw);
+            if (intentionallyClosed || event.optInt("epoch",-1)!=generation) return;
             String kind = event.optString("kind");
             if ("status".equals(kind)) listener.status(event.optString("text"));
             else if ("connected".equals(kind)) {

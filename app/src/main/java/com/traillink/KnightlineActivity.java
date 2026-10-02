@@ -45,7 +45,7 @@ import java.util.UUID;
  * inherited native chess controller.
  */
 public final class KnightlineActivity extends ChessLinkActivity {
-    static final int KNIGHTLINE_PROTOCOL = 1;
+    static final int KNIGHTLINE_PROTOCOL = 2;
     static final int BRIDGE_VERSION = 1;
     static final int MAX_COMMAND_BYTES = 16 * 1024;
     static final String ORIGIN = "https://appassets.androidplatform.net";
@@ -108,6 +108,27 @@ public final class KnightlineActivity extends ChessLinkActivity {
     private String sentReviewSession = "";
     private int sentReviewSequence = -1;
     private int outgoingRemoteClock = -1;
+    private ChessTakeback takebackRequest;
+    private String takebackId = "", takebackConfirmation = "";
+    private int takebackSequence = -1;
+    private ChessSandbox sandbox;
+    private String sandboxToken = UUID.randomUUID().toString();
+    private String sandboxError = "";
+    private StockfishEngine.Coach sandboxEvaluation;
+    private String sandboxEvaluationState = "Analyzing…";
+    private long sandboxSearchGeneration;
+    private boolean reconnectAllowed=true, remoteForeground;
+    private int reconnectAttempts;
+    private long lastRemoteFrame;
+    private final Runnable reconnectLoop=()->attemptRemoteReconnect();
+    private final Runnable heartbeatLoop=new Runnable(){public void run(){
+        if(destroyed||!remoteForeground)return;
+        if(!local&&ready){
+            if(android.os.SystemClock.elapsedRealtime()-lastRemoteFrame>15_000){link.close();lost();}
+            else send(obj("type","ping","session",session));
+        }
+        handler.postDelayed(this,3_000);
+    }};
 
     @Override public void onCreate(Bundle bundle) {
         // MainActivity restores its native save and calls the virtual home().
@@ -132,6 +153,7 @@ public final class KnightlineActivity extends ChessLinkActivity {
         // post-game report cannot block interactive exploration.
         worker.execute(() -> { try { getStockfish(); } catch (Exception ignored) { } });
         createLocalWebView();
+        restoreSandbox();
     }
 
     @SuppressLint("SetJavaScriptEnabled")
@@ -291,6 +313,10 @@ public final class KnightlineActivity extends ChessLinkActivity {
     @Override public void onWindowFocusChanged(boolean hasFocus) {
         super.onWindowFocusChanged(hasFocus);
         if (!hasFocus) return;
+        // The foundation Activity sets cream bars. Match this shell's dark
+        // surface before requesting light icons, including Android 13/14.
+        getWindow().setStatusBarColor(Color.rgb(7,16,30));
+        getWindow().setNavigationBarColor(Color.rgb(7,16,30));
         if (Build.VERSION.SDK_INT >= 30) {
             getWindow().getInsetsController().setSystemBarsAppearance(0,
                     android.view.WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS
@@ -399,13 +425,18 @@ public final class KnightlineActivity extends ChessLinkActivity {
 
     @Override public void connected(String name, String address) {
         sentReviewSession = "";
-        super.connected(name, address);
-        runOnUiThread(() -> postEvent("transport", transportPayload()));
+        runOnUiThread(() -> {
+            ready=false;peer=name==null?"Friend":name;peerAddress=address;
+            lastRemoteFrame=android.os.SystemClock.elapsedRealtime();
+            status="Connected · checking saved game";
+            send(obj("type","hello","version",protocolVersion(),"resumeSession",session));
+            postEvent("transport",transportPayload());
+        });
     }
 
     @Override public void lost() {
         super.lost();
-        runOnUiThread(() -> postEvent("transport", transportPayload()));
+        runOnUiThread(() -> { clearTakeback(); pauseRemoteClock(); save(); postEvent("transport", transportPayload()); publishState(); scheduleReconnect(); });
     }
 
     @Override void toast(String text) { notice(text, false); }
@@ -500,6 +531,7 @@ public final class KnightlineActivity extends ChessLinkActivity {
     }
 
     @Override void startGame(int id) {
+        clearTakeback();
         if (!local) {
             resetFriendLearningState();
             if (outgoingRemoteClock >= 0) setClockPreset(outgoingRemoteClock);
@@ -531,6 +563,7 @@ public final class KnightlineActivity extends ChessLinkActivity {
     }
 
     @Override void showSnapshot() {
+        if (takebackRequest != null && !takebackRequest.current(session, game)) finishTakeback("expired");
         // Consume setup before the first snapshot can save, render or start a bot.
         if(pendingLessonSide>=0&&game!=null){
             me=pendingLessonSide;pendingLessonSide=-1;
@@ -553,6 +586,26 @@ public final class KnightlineActivity extends ChessLinkActivity {
         if (android.os.Looper.myLooper() != android.os.Looper.getMainLooper()) {
             runOnUiThread(() -> message(message)); return;
         }
+        lastRemoteFrame=android.os.SystemClock.elapsedRealtime();
+        if("ping".equals(message.optString("type"))){if(ready)send(obj("type","pong","session",session));return;}
+        if("pong".equals(message.optString("type")))return;
+        if("hello".equals(message.optString("type"))){
+            String otherSession=message.optString("resumeSession");
+            if(message.optInt("version",-1)!=protocolVersion()||(!session.isEmpty()&&!otherSession.isEmpty()&&!session.equals(otherSession))){
+                reconnectAllowed=false;handler.removeCallbacks(reconnectLoop);link.close();ready=false;pauseRemoteClock();
+                status=message.optInt("version",-1)!=protocolVersion()?"Version mismatch · update Knightline on both phones":"These phones have different saved games. Start a new room to play together.";
+                notice(status,true);publishState();return;
+            }
+        }
+        if (message.optString("type").startsWith("takeback-")) { handleTakebackMessage(message); return; }
+        if ("state".equals(message.optString("type")) && !host && ready && !local) {
+            if (!takebackId.isEmpty() && (!session.equals(message.optString("session"))
+                    || message.optInt("seq",-1)!=takebackSequence || message.optInt("winner",-1)>=0)) clearTakeback();
+            // Integrity is part of every authoritative snapshot, including reconnect.
+            usedTakeback = message.optBoolean("takebackUsed",false);
+            if (session.equals(message.optString("session")) && state!=null
+                    && message.optInt("seq",-1)<state.optInt("seq",-1)) return;
+        }
         if (message != null && "rating".equals(message.optString("type"))) {
             String match = message.optString("session", "");
             int rating = message.optInt("rating", -1);
@@ -574,7 +627,11 @@ public final class KnightlineActivity extends ChessLinkActivity {
         if ("hello".equals(message.optString("type")) && ready && resumeRemotePending && state != null) {
             resumeRemotePending = false; requestedScreen = "game"; renderGame();
         }
-        if ("hello".equals(message.optString("type")) && ready) ensureFriendRatingExchange(true);
+        if ("hello".equals(message.optString("type")) && ready) {
+            reconnectAttempts=0;handler.removeCallbacks(reconnectLoop);resumeRemoteClock();
+            if(host&&game!=null)showSnapshot();
+            ensureFriendRatingExchange(true);
+        }
         if (message != null && "state".equals(message.optString("type"))) {
             // A validated new friend game may open its board. Later peer/engine
             // updates must not navigate away from an archive, puzzle or Home.
@@ -586,7 +643,98 @@ public final class KnightlineActivity extends ChessLinkActivity {
                 leaveReview(); requestedScreen = "game"; renderGame();
             }
             handler.post(this::ensureFriendRatingExchange);
+            usedTakeback = message.optBoolean("takebackUsed",false);
+            persistSessionIntegrityState();
         }
+    }
+
+    @Override JSONObject snapshot(int player) {
+        JSONObject value=super.snapshot(player);
+        if(game!=null&&game.id==0)try{
+            int[][] captured=ChessCaptures.byPlayer(game);
+            value.put("captured",new JSONArray().put(array(captured[0])).put(array(captured[1])));
+            value.put("canRequestTakeback",ChessTakeback.target(game,player)>=0);
+            value.put("takebackUsed",usedTakeback);
+        }catch(Exception ignored){}
+        return value;
+    }
+
+    @Override void undoChess() {
+        if(local){super.undoChess();return;}
+        if(!ready||state==null||state.optInt("winner",-1)>=0||!takebackId.isEmpty()
+                ||!state.optBoolean("canRequestTakeback")){notice("No takeback is available right now.",false);return;}
+        takebackId=UUID.randomUUID().toString();takebackSequence=state.optInt("seq",-1);
+        if(host)takebackRequest=new ChessTakeback(takebackId,session,game,me);
+        send(obj("type","takeback-request","session",session,"seq",takebackSequence,"request",takebackId));
+        notice("Takeback requested. Waiting for your friend; clocks keep running.",false);publishState();
+        final String id=takebackId;
+        handler.postDelayed(()->{if(id.equals(takebackId)){
+            if(host)finishTakeback("expired");else {send(obj("type","takeback-cancel","session",session,"request",id));clearTakeback();publishState();}
+        }},30_000);
+    }
+
+    private void handleTakebackMessage(JSONObject m) {
+        if(!ready||local||state==null||!session.equals(m.optString("session")))return;
+        String type=m.optString("type"),id=m.optString("request");
+        if(id.isEmpty()||id.length()>96)return;
+        if(type.equals("takeback-result")&&!host){
+            if(id.equals(takebackId)){String result=m.optString("result");clearTakeback();
+                notice(result.equals("accepted")?"Takeback accepted · Practice game":result.equals("declined")?"Takeback declined.":"Takeback request expired.",false);publishState();}return;
+        }
+        if(type.equals("takeback-cancel")&&host){if(id.equals(takebackId))finishTakeback("expired");return;}
+        if(type.equals("takeback-response")&&host){
+            if(takebackRequest==null||!id.equals(takebackId)||m.optInt("seq",-1)!=takebackSequence||takebackRequest.requester!=me)return;
+            if(!(m.opt("accepted") instanceof Boolean))return;
+            respondToTakeback(m.optBoolean("accepted"),1-me);return;
+        }
+        if(!type.equals("takeback-request"))return;
+        int seq=m.optInt("seq",-1);
+        if(seq!=state.optInt("seq",-1)||state.optInt("winner",-1)>=0||!takebackId.isEmpty()||pendingConfirmation!=null){
+            send(obj("type",host?"takeback-result":"takeback-response","session",session,"seq",seq,"request",id,"accepted",false,"result","declined"));return;
+        }
+        if(host){
+            try{takebackRequest=new ChessTakeback(id,session,game,1-me);}catch(IllegalArgumentException e){return;}
+        }
+        takebackId=id;takebackSequence=seq;
+        confirm("Allow takeback?",peer+" asks to undo their last move and your reply, if already played. Remaining clock time is kept. This makes the game Practice.",()->respondToTakeback(true,me));
+        takebackConfirmation=pendingConfirmationToken;
+        pendingConfirmationCancel=()->respondToTakeback(false,me);
+        publishState();
+        handler.postDelayed(()->{if(id.equals(takebackId)){
+            if(host)finishTakeback("expired");else respondToTakeback(false,me);
+        }},30_000);
+    }
+
+    private void respondToTakeback(boolean accepted,int responder) {
+        if(takebackId.isEmpty())return;
+        if(!host){
+            if(ready)send(obj("type","takeback-response","session",session,"seq",takebackSequence,"request",takebackId,"accepted",accepted));
+            // Keep the request pending until the authoritative host responds.
+            return;
+        }
+        if(!accepted){finishTakeback("declined");return;}
+        try{
+            if(!ready||takebackRequest==null)throw new IllegalArgumentException("Request expired");
+            Game next=takebackRequest.accept(session,game,responder);
+            usedTakeback=true;game=next;rebaseClockAfterTakeback();
+            analyzing="";analysisError="";coach=null;coachRequest="";coachSeq=-1;
+            persistSessionIntegrityState();finishTakeback("accepted");showSnapshot();
+        }catch(IllegalArgumentException error){finishTakeback("expired");}
+    }
+
+    private void finishTakeback(String result) {
+        if(!takebackId.isEmpty()&&ready)send(obj("type","takeback-result","session",session,"request",takebackId,"result",result));
+        clearTakeback();
+        notice(result.equals("accepted")?"Takeback accepted · Practice game":result.equals("declined")?"Takeback declined.":"Takeback request expired because the position changed or time ran out.",false);
+        publishState();
+    }
+
+    private void clearTakeback() {
+        if(!takebackConfirmation.isEmpty()&&takebackConfirmation.equals(pendingConfirmationToken)){
+            postEvent("confirmationExpired",obj("token",takebackConfirmation));
+            pendingConfirmation=null;pendingConfirmationCancel=null;pendingConfirmationToken="";
+        }
+        takebackRequest=null;takebackId="";takebackSequence=-1;takebackConfirmation="";
     }
 
     private void resetFriendLearningState() {
@@ -601,11 +749,13 @@ public final class KnightlineActivity extends ChessLinkActivity {
     }
 
     @Override void startBluetoothConfirmed(boolean hosting) {
+        reconnectAllowed=true;reconnectAttempts=0;handler.removeCallbacks(reconnectLoop);
         super.startBluetoothConfirmed(hosting);
         resetFriendLearningState(); publishState();
     }
 
     @Override void beginOnlineConfirmed(boolean hosting, String code) {
+        reconnectAllowed=true;reconnectAttempts=0;handler.removeCallbacks(reconnectLoop);
         super.beginOnlineConfirmed(hosting, code);
         resetFriendLearningState(); publishState();
     }
@@ -615,14 +765,44 @@ public final class KnightlineActivity extends ChessLinkActivity {
             reject("There is no unfinished friend game to reconnect."); return;
         }
         if (ready) { requestedScreen = "game"; renderGame(); return; }
-        resumeRemotePending = true;
-        if (savedPeer.startsWith("peerjs:")) {
-            String code = savedPeer.substring(7);
-            useOnline();
-            status = "Reconnecting to room " + code + "…";
-            if (host) ((PeerLink) link).hostRoom(code); else ((PeerLink) link).joinRoom(code, "Guest");
-            home();
-        } else { useBluetooth(); prepare(host); }
+        resumeRemotePending = true;reconnectAllowed=true;reconnectAttempts=0;
+        handler.removeCallbacks(reconnectLoop);attemptRemoteReconnect();
+    }
+
+    private boolean canReconnect(){return !destroyed&&remoteForeground&&reconnectAllowed&&!local&&!ready&&state!=null&&state.optInt("winner",-1)<0&&!savedPeer.isEmpty();}
+    private void scheduleReconnect(){
+        handler.removeCallbacks(reconnectLoop);
+        if(canReconnect()&&reconnectAttempts<8)handler.postDelayed(reconnectLoop,Math.min(8_000,1000L<<Math.min(reconnectAttempts,3)));
+    }
+    private void attemptRemoteReconnect(){
+        if(!canReconnect())return;
+        if(reconnectAttempts>=8){status="Could not reconnect yet. Keep both apps open, then tap Reconnect.";publishState();return;}
+        reconnectAttempts++;
+        try{
+            if(savedPeer.startsWith("peerjs:")){
+                useOnline();String code=savedPeer.substring(7);
+                status="Reconnecting to room "+code+"…";
+                if(host)((PeerLink)link).hostRoom(code);else ((PeerLink)link).joinRoom(code,"Guest");
+            }else{
+                useBluetooth();
+                boolean permission=Build.VERSION.SDK_INT<31||checkSelfPermission(android.Manifest.permission.BLUETOOTH_CONNECT)==android.content.pm.PackageManager.PERMISSION_GRANTED;
+                if(adapter==null||!permission||!adapter.isEnabled()){status="Turn on Bluetooth and allow Nearby devices, then tap Reconnect.";publishState();scheduleReconnect();return;}
+                status="Reconnecting to your saved phone…";
+                if(host)link.host();else link.join(adapter.getRemoteDevice(savedPeer));
+            }
+            postEvent("transport",transportPayload());publishState();
+            handler.removeCallbacks(reconnectLoop);handler.postDelayed(reconnectLoop,12_000);
+        }catch(Exception error){status="Could not reconnect. Check Bluetooth or internet and keep both apps open.";publishState();scheduleReconnect();}
+    }
+
+    @Override protected void onResume(){
+        super.onResume();remoteForeground=true;
+        if(!local&&!ready)pauseRemoteClock();
+        lastRemoteFrame=android.os.SystemClock.elapsedRealtime();
+        handler.removeCallbacks(heartbeatLoop);handler.postDelayed(heartbeatLoop,3_000);scheduleReconnect();
+    }
+    @Override protected void onPause(){
+        remoteForeground=false;handler.removeCallbacks(reconnectLoop);handler.removeCallbacks(heartbeatLoop);super.onPause();
     }
 
     // Clock ticks need only a small state frame. Send the complete replay once
@@ -708,6 +888,7 @@ public final class KnightlineActivity extends ChessLinkActivity {
     }
 
     private void handleCommand(String type, JSONObject payload) {
+        if(type.startsWith("sandbox.")){sandboxCommand(type,payload);return;}
         switch (type) {
             case "nav.home": home(); return;
             case "nav.play": navigate("play"); return;
@@ -795,7 +976,7 @@ public final class KnightlineActivity extends ChessLinkActivity {
             case "transport.scan": scan(); return;
             case "transport.connect": joinNearby(payload); return;
             case "transport.resume": resumeRemote(); return;
-            case "transport.disconnect": link.close(); ready = false; status = "Disconnected · game saved"; home(); return;
+            case "transport.disconnect": reconnectAllowed=false;handler.removeCallbacks(reconnectLoop);clearTakeback();link.close();ready=false;pauseRemoteClock();save();status="Disconnected · game saved";home();return;
             case "transport.settings": openBluetoothSettings(); return;
             case "online.host": beginOnlineRoom(true, payload); return;
             case "online.join": beginOnlineRoom(false, payload); return;
@@ -809,6 +990,103 @@ public final class KnightlineActivity extends ChessLinkActivity {
     private void resetReviewWorkspace() {
         reviewWorkspace = null; reviewWorkspaceIndex = -1; reviewToken = "";
         reviewShowBest = false; reviewExploring=false; reviewEvaluatedPosition=null; reviewEvaluation = null; reviewSearchGeneration++;
+    }
+
+    private void restoreSandbox() {
+        java.io.File file=new java.io.File(getFilesDir(),"sandbox.bin");
+        try(java.io.ObjectInputStream input=new java.io.ObjectInputStream(new java.io.FileInputStream(file))){
+            sandbox=(ChessSandbox)input.readObject();
+            ChessSandbox.validate(sandbox.position);
+        }catch(Exception ignored){sandbox=new ChessSandbox();sandbox.edit();sandbox.clear();}
+    }
+
+    private void saveSandbox() {
+        java.io.File file=new java.io.File(getFilesDir(),"sandbox.tmp");
+        try{
+            try(java.io.ObjectOutputStream output=new java.io.ObjectOutputStream(new java.io.FileOutputStream(file))){output.writeObject(sandbox);}
+            java.nio.file.Files.move(file.toPath(),new java.io.File(getFilesDir(),"sandbox.bin").toPath(),java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+        }catch(Exception error){notice("Sandbox could not be saved. Keep the app open.",true);}
+    }
+
+    private void sandboxCommand(String type,JSONObject p) {
+        if(sandbox==null)restoreSandbox();
+        if(type.equals("sandbox.open")){
+            leaveReview();inGame=false;gameScreen=false;requestedScreen="sandbox";
+            sandboxError="";if(!sandbox.editing())scheduleSandboxEvaluation();publishState();return;
+        }
+        if(!"sandbox".equals(requestedScreen)||!sandboxToken.equals(p.optString("token"))||p.optLong("positionSeq",-1)!=sandbox.revision){
+            reject("The sandbox position changed. Please try again.");publishState();return;
+        }
+        sandboxError="";
+        try{
+            switch(type){
+                case "sandbox.move":
+                    int count=MoveFeedback.pieces(sandbox.position.b);
+                    if(!sandbox.play(p.optInt("from",-1),p.optInt("to",-1),p.optInt("promotion",5)))throw new IllegalArgumentException("Choose a legal move for the side to move.");
+                    feedback.play(webView,MoveFeedback.cue(count,MoveFeedback.pieces(sandbox.position.b),sandbox.position.winner));break;
+                case "sandbox.undo":sandbox.undo();break;
+                case "sandbox.edit":sandbox.edit();break;
+                case "sandbox.cancel":sandbox.cancel();break;
+                case "sandbox.place":sandbox.place(p.optInt("square",-1),p.optInt("piece",99));break;
+                case "sandbox.turn":
+                    int side=p.optInt("side",-1);if(!sandbox.editing()||side<0||side>1)throw new IllegalArgumentException("Choose White or Black.");
+                    sandbox.draftTurn=side;sandbox.revision++;break;
+                case "sandbox.rights":
+                    int bit=p.optInt("bit",0);if(!sandbox.editing()||(bit!=1&&bit!=2&&bit!=4&&bit!=8))throw new IllegalArgumentException("Invalid castling choice.");
+                    sandbox.draftRights^=bit;sandbox.revision++;break;
+                case "sandbox.apply":sandbox.apply();break;
+                case "sandbox.clear":sandbox.clear();break;
+                case "sandbox.reset":sandbox.reset();break;
+                case "sandbox.flip":sandbox.orientation=1-sandbox.orientation;sandbox.revision++;break;
+                case "sandbox.import":sandbox.importFen(p.optString("fen",""));break;
+                case "sandbox.evaluate":break;
+                default:return;
+            }
+            saveSandbox();
+            if(!sandbox.editing()){if(!type.equals("sandbox.flip"))scheduleSandboxEvaluation();}
+            else {sandboxSearchGeneration++;sandboxEvaluation=null;}
+        }catch(IllegalArgumentException error){sandboxError=error.getMessage();notice(sandboxError,true);}
+        publishState();
+    }
+
+    private JSONObject sandboxPayload() {
+        if(sandbox==null||!"sandbox".equals(requestedScreen))return obj("available",false);
+        Game g=sandbox.position;JSONArray moves=new JSONArray();
+        if(!sandbox.editing())for(int[] m:g.legal())moves.put(array(m));
+        String score=sandbox.editing()?"—":g.winner==2?"0.00":g.winner>=0?(g.winner==0?"M0":"−M0"):sandboxEvaluation==null?"…":formatEvaluation(sandboxEvaluation);
+        return obj("available",true,"token",sandboxToken,"me",sandbox.orientation,"yourTurn",!sandbox.editing()&&g.winner<0,
+                "editing",sandbox.editing(),"turn",sandbox.editing()?sandbox.draftTurn:g.turn,"rights",sandbox.draftRights,
+                "canUndo",!sandbox.editing()&&!g.chessMoves.isEmpty(),"winner",g.winner,"error",sandboxError,
+                "evaluation",score,"evaluationState",sandbox.editing()?"Set up a position":g.winner>=0?"Final position":sandboxEvaluationState,
+                "fen",StockfishEngine.fen(g),"lastMove",g.lastMove,
+                "position",obj("b",array(sandbox.editing()?sandbox.draft:java.util.Arrays.copyOf(g.b,64)),"moves",moves,
+                        "seq",sandbox.revision,"lastA",sandbox.editing()?-1:g.lastA,"lastZ",sandbox.editing()?-1:g.lastZ));
+    }
+
+    private void scheduleSandboxEvaluation() {
+        if(sandbox==null||sandbox.editing()||destroyed)return;
+        final long generation=++sandboxSearchGeneration;
+        final Game position=sandbox.position.copy();
+        sandboxEvaluation=null;sandboxEvaluationState="Analyzing…";
+        if(position.winner>=0)return;
+        reviewWorker.execute(()->{
+            if(destroyed||generation!=sandboxSearchGeneration)return;
+            StockfishEngine.Coach result=null;
+            try{
+                java.io.File net=new java.io.File(getFilesDir(),"nn-5af11540bbfe.nnue");
+                for(int n=0;n<100&&!net.isFile();n++){
+                    if(destroyed||generation!=sandboxSearchGeneration)return;Thread.sleep(100);
+                }
+                if(reviewEngine==null)reviewEngine=new StockfishEngine(new java.io.File(getApplicationInfo().nativeLibraryDir,"libstockfish.so"),net);
+                result=reviewEngine.coach(position,0);
+            }catch(Exception error){android.util.Log.w("Knightline","Sandbox evaluation unavailable",error);}
+            final StockfishEngine.Coach value=result;
+            handler.post(()->{
+                if(destroyed||generation!=sandboxSearchGeneration)return;
+                sandboxEvaluation=value;sandboxEvaluationState=value==null?"Tap score to retry":"Live · depth "+value.depth;
+                if("sandbox".equals(requestedScreen))publishState();
+            });
+        });
     }
 
     private void leaveReview() {
@@ -1289,6 +1567,7 @@ public final class KnightlineActivity extends ChessLinkActivity {
 
     private JSONObject uiState() {
         JSONObject root = obj("screen", requestedScreen, "backTarget", navigation.back(requestedScreen), "session", "review".equals(requestedScreen) ? reviewSession() : session,
+                "edition",BuildConfig.APPLICATION_ID.endsWith(".gpt")?"Knightline Preview gpt version":"Knightline Preview",
                 "revision", revision + 1, "transport", transportPayload(), "profile", profilePayload(),
                 "lessons", lessonPayload(), "fontScale", fontScalePercent(), "archive", archivePayload(),
                 "settings", obj("sound", feedback == null || feedback.soundEnabled(), "vibration", feedback == null || feedback.vibrationEnabled(),
@@ -1297,6 +1576,7 @@ public final class KnightlineActivity extends ChessLinkActivity {
             root.put("match", matchPayload());
             root.put("review", reviewPayload());
             root.put("puzzle", puzzlePayload());
+            root.put("sandbox", sandboxPayload());
         } catch (Exception ignored) { }
         return root;
     }
@@ -1308,7 +1588,7 @@ public final class KnightlineActivity extends ChessLinkActivity {
 
     private JSONObject matchPayload() {
         if (state == null || state.optInt("id", -1) != 0) return obj("available", false);
-        boolean yourTurn = state.optInt("winner", -1) < 0 && state.optInt("turn", -1) == me && !lessonComplete();
+        boolean yourTurn = (local||ready) && state.optInt("winner", -1) < 0 && state.optInt("turn", -1) == me && !lessonComplete();
         boolean guided = isGuidedLesson();
         boolean normal = isNormalBotGame();
         JSONObject display = state;
@@ -1360,7 +1640,9 @@ public final class KnightlineActivity extends ChessLinkActivity {
                 "you", local && !solo ? playerLabel(me) : "You",
                 "youDetail", me == 0 ? "White" : "Black",
                 "lastMove", state.optString("lastMove", ""), "note", state.optString("note", ""),
-                "clock", clockPayload(), "coach", coachPayload, "canTakeback", undoPly() >= 0,
+                "captured",state.optJSONArray("captured"),
+                "clock", clockPayload(), "coach", coachPayload, "canTakeback", local ? winner<0&&undoPly()>=0 : ready&&winner<0&&takebackId.isEmpty()&&state.optBoolean("canRequestTakeback"),
+                "takebackPending",!takebackId.isEmpty(),
                 "canReview", local || host ? game != null && game.history.size() >= 2 : reviewBoards.length() >= 2,
                 "practice", practiceLabel(), "moveCount", game == null ? 0 : game.chessMoves.size());
     }

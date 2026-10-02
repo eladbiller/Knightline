@@ -13,7 +13,7 @@
     <application
         android:allowBackup="false"
         android:icon="@mipmap/ic_launcher"
-        android:label="Knightline Preview"
+        android:label="${knightlineAppLabel}"
         android:supportsRtl="true"
         android:theme="@style/KnightlineStartingTheme"
         android:usesCleartextTraffic="false">

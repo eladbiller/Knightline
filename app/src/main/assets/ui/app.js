@@ -40,6 +40,7 @@
   let puzzleFilter = 'warmup';
   let puzzlePage = 0;
   let learnSection = 'puzzles';
+  let sandboxPiece = 6;
 
   const clockNames = ['10 | 0', '5 | 0', '3 | 2', '1 | 0', 'Untimed'];
   const strengthNames = ['Easy', 'Medium', 'Hard'];
@@ -143,6 +144,7 @@
     const payload = object(event.payload, {});
     applyFontScale(payload.fontScale);
     model.screen = payload.screen || model.screen;
+    model.edition = payload.edition || 'Knightline Preview';
     model.backTarget = payload.backTarget || 'home';
     model.session = payload.session || '';
     model.transport = object(payload.transport, model.transport);
@@ -155,6 +157,7 @@
     model.match = payload.match && payload.match.position ? payload.match : null;
     model.review = object(payload.review, model.review);
     model.puzzle = object(payload.puzzle, {});
+    model.sandbox = object(payload.sandbox, {});
     model.archive = object(payload.archive, model.archive);
     model.settings = object(payload.settings, model.settings);
     if(previousPosition!==boardPositionKey())selectedSquare=null;
@@ -167,6 +170,10 @@
     if (selectedSquare != null && !canSelectFrom(selectedSquare)) selectedSquare = null;
     render();
     if (overlay?.kind === 'feedback') patchFeedback();
+    if (overlay?.kind === 'sandbox-options') {
+      if(overlay.importSeq!=null && model.sandbox.position.seq!==overlay.importSeq && !model.sandbox.error)closeOverlay();
+      else patchSandboxOptions();
+    }
     if (model.screen === 'review' && !model.review.liveGame && showReviewOverview) {
       showReviewOverview = false; openReviewOverview();
     } else if (overlay && overlay.kind === 'review-overview') {
@@ -211,6 +218,8 @@
       showNativeOverlay(payload);
     } else if (event.type === 'confirm') {
       openConfirmation(payload);
+    } else if (event.type === 'confirmationExpired') {
+      if (overlay?.kind === 'confirm' && overlay.token === payload.token) closeOverlay();
     } else if (event.type === 'promotion') {
       openPromotion(payload);
     } else if (event.type === 'back') {
@@ -243,6 +252,7 @@
     else if (model.screen === 'game') renderGame();
     else if (model.screen === 'review') renderReview();
     else if (model.screen === 'puzzle') renderPuzzle();
+    else if (model.screen === 'sandbox') renderSandbox();
     else renderHome();
     main.scrollTop = view !== renderedView ? scrollPositions.get(view) || 0 : scroll;
     renderedScreen = model.screen;
@@ -250,6 +260,9 @@
   }
 
   function patchHeader() {
+    if(model.screen==='sandbox'){
+      header.innerHTML='<div class="header-brand"><button class="header-back" type="button" data-action="game-back" aria-label="Back to Play">'+icon('back')+'</button><p class="brand-word">Sandbox</p></div><span class="header-status">Private · offline</span>';return;
+    }
     const transport = object(model.transport, {});
     const connected = !!transport.ready;
     const waitingForRoom = !connected && transport.kind === 'online' &&
@@ -366,6 +379,7 @@
       '<div class="hero-actions"><button class="button button--primary" type="button" data-action="setup-bot">Set up bot game</button></div></article>' +
       '<div class="quick-grid">' +
       quickCard('pass', 'Pass & play', 'Two people, one device', 'setup-pass') +
+      quickCard('board', 'Sandbox', 'Build a position. Play both sides.', 'sandbox-open') +
       quickCard('bluetooth', 'Nearby Bluetooth', 'No internet required', 'transport-menu') +
       quickCard('room', 'Private Peer room', 'Invite only, internet for signaling', 'online-menu') +
       quickCard('review', 'Game library', 'Review your saved games', 'nav-history') +
@@ -420,7 +434,7 @@
     paintBoardWorkspace(markup, '.puzzle-workspace');
   }
 
-  function boardContext() { return model.screen === 'puzzle' ? model.puzzle : model.screen === 'review' ? model.review : model.match; }
+  function boardContext() { return model.screen === 'sandbox' ? model.sandbox : model.screen === 'puzzle' ? model.puzzle : model.screen === 'review' ? model.review : model.match; }
   function boardPositionKey() {
     const c = boardContext(), p = c?.position;
     return [model.screen,model.session,c?.token,c?.index,c?.me,p?.seq,array(p?.b).join(',')].join(':');
@@ -452,6 +466,37 @@
   function reviewCommand(type, payload) {
     const r = model.review;
     send('review.' + type, Object.assign({token:r.token,index:r.index,positionSeq:r.position.seq},payload || {}));
+  }
+
+  function sandboxCommand(type,payload) {
+    const s=model.sandbox;
+    send('sandbox.'+type,Object.assign({token:s.token,positionSeq:s.position.seq},payload||{}),false);
+  }
+
+  function renderSandbox() {
+    const s=model.sandbox;if(!s?.available)return;
+    const pieces=[6,5,4,3,2,1,-6,-5,-4,-3,-2,-1];
+    const names=['','pawn','knight','bishop','rook','queen','king'];
+    const palette='<div class="sandbox-palette" aria-label="Pieces to place">'+pieces.map(p=>'<button type="button" data-sandbox-piece="'+p+'" aria-pressed="'+(sandboxPiece===p)+'" aria-label="Place '+(p>0?'White ':'Black ')+names[Math.abs(p)]+'">'+pieceSvg(p)+'</button>').join('')+'</div>';
+    const status=s.editing?'Tap a piece, then a square':s.winner===2?'Draw position':s.winner>=0?(s.winner===0?'White':'Black')+' wins':(s.turn===0?'White':'Black')+' to move';
+    const markup='<section class="screen sandbox-workspace'+(s.editing?' sandbox-workspace--editing':'')+'"><div class="game-topline"><div><p class="game-name">'+status+'</p><span class="game-integrity">'+(s.editing?'Create your own position':'You control both sides · no rating')+'</span></div>'+
+      (!s.editing?'<button class="eval-chip" type="button" data-sandbox="evaluate" aria-label="Refresh evaluation"><span class="eval-label">EVAL</span><span data-evaluation>'+escape(s.evaluation)+'</span><span class="eval-state">'+escape(s.evaluationState)+'</span></button>':'<button class="button button--compact" type="button" data-sandbox-piece="0" aria-label="Remove pieces" aria-pressed="'+(sandboxPiece===0)+'">Erase</button>')+'</div>'+
+      '<div id="board-host" class="board-stage">'+boardLayout(s.position,s.me,true,{evaluation:s.evaluation},!s.editing)+'</div>'+
+      '<div class="sandbox-tools">'+(s.editing?palette+'<div class="sandbox-turn" aria-label="Side to move">'+[[0,'White'],[1,'Black']].map(([n,label])=>'<button class="chip" type="button" data-sandbox-turn="'+n+'" aria-pressed="'+(s.turn===n)+'">'+label+' to move</button>').join('')+'</div>':'<p class="body-copy">'+escape(s.lastMove||'Move either color. Use Edit to change the position.')+'</p>')+'</div>'+
+      '<p class="sandbox-error" role="status">'+escape(s.error|| (s.editing?'Place both kings to begin. Pieces stay as you leave them.':'Your game save and history are unchanged.'))+'</p>'+
+      '<div class="sandbox-actions">'+(s.editing?'<button class="button" type="button" data-sandbox="clear">Clear</button><button class="button" type="button" data-action="sandbox-options">Options</button><button class="button button--primary" type="button" data-sandbox="apply">Play position</button>':'<button class="button" type="button" data-sandbox="undo" '+(!s.canUndo?'disabled':'')+'>'+icon('undo')+'Undo</button><button class="button" type="button" data-sandbox="edit">Edit</button><button class="button" type="button" data-action="sandbox-options">Options</button>')+'</div></section>';
+    paintBoardWorkspace(markup,'.sandbox-workspace');
+  }
+
+  function openSandboxOptions(){
+    const s=model.sandbox;overlay={kind:'sandbox-options'};openSheet('sandbox-options');
+    sheetScroll.innerHTML='<div class="sheet-heading"><h2 id="sheet-title" class="sheet-title">Sandbox options</h2><button class="icon-button" type="button" data-sheet-close aria-label="Close">'+icon('close')+'</button></div><div class="choice-grid choice-grid--two"><button class="choice" type="button" data-sandbox="flip">Flip board</button><button class="choice" type="button" data-sandbox="reset">Starting position</button>'+(s.editing?'<button class="choice" type="button" data-sandbox="cancel">Discard edits</button>':'')+'</div>'+
+      (s.editing?'<fieldset class="lesson-side"><legend class="eyebrow">Castling rights</legend><div class="choice-grid choice-grid--two">'+[[1,'White O-O'],[2,'White O-O-O'],[4,'Black O-O'],[8,'Black O-O-O']].map(([bit,label])=>'<button class="choice" type="button" data-sandbox-right="'+bit+'" aria-pressed="'+!!(s.rights&bit)+'">'+label+'</button>').join('')+'</div><p class="tiny">Enable only if that king and rook have never moved.</p></fieldset>':'')+
+      '<label class="eyebrow" for="sandbox-fen">Import FEN</label><textarea id="sandbox-fen" class="sandbox-fen" maxlength="150" rows="3" spellcheck="false" placeholder="Paste a six-field FEN"></textarea><button class="button button--primary" type="button" data-sandbox-import>Load position</button><p class="tiny" data-sandbox-error></p><details><summary>Current position FEN</summary><p class="tiny sandbox-fen-copy">'+escape(s.fen)+'</p></details>';
+  }
+  function patchSandboxOptions(){
+    sheetScroll.querySelectorAll('[data-sandbox-right]').forEach(b=>b.setAttribute('aria-pressed',String(!!(model.sandbox.rights&Number(b.dataset.sandboxRight)))));
+    const error=sheetScroll.querySelector('[data-sandbox-error]');if(error)error.textContent=model.sandbox.error||'';
   }
 
   function renderProfile() {
@@ -508,22 +553,28 @@
       (evaluationEnabled ? '<button class="eval-chip" type="button" data-action="engine-info" aria-label="Stockfish evaluation ' + escape(coach.evaluation || 'not ready') + '. ' + escape(coach.evaluationState || 'Analyzing') + '">' +
       '<span class="eval-label">EVAL</span><span data-evaluation>' + escape(coach.evaluation || '—') + '</span><span class="eval-state">' + escape(coach.evaluationState || 'Analyzing') + '</span></button></div>' +
       '' : '<span class="game-state-pill">' + icon('check') + escape(finished ? 'Complete' : match.yourTurn ? 'Your turn' : 'In play') + '</span></div>') +
-      playerCard(match.opponent || 'Opponent', playerDetail(match.opponentDetail || 'Private match', material, 1 - Number(match.me)), initials(match.opponent || 'OP'), clockForOpponent(match, clock), opponentActive, !!match.solo, 'opponent') +
+      playerCard(match.opponent || 'Opponent', playerDetail(match.opponentDetail || 'Private match', material, 1 - Number(match.me)), initials(match.opponent || 'OP'), clockForOpponent(match, clock), opponentActive, !!match.solo, 'opponent',array(match.captured)[1-Number(match.me)]) +
       '<div id="board-host" class="board-stage">' + boardLayout(position, Number(match.me), true, coach, evaluationEnabled) + '</div>' +
-      playerCard(match.you || 'You', playerDetail(match.youDetail || 'Your side', material, Number(match.me)), 'ME', clockForYou(match, clock), youActive, false, 'you') +
+      playerCard(match.you || 'You', playerDetail(match.youDetail || 'Your side', material, Number(match.me)), 'ME', clockForYou(match, clock), youActive, false, 'you',array(match.captured)[Number(match.me)]) +
       coachMarkup(coach, match, finished) +
       gameActions(match, finished) + '</section>';
     paintBoardWorkspace(markup, '.play-workspace');
   }
 
-  function playerCard(name, detail, initialsValue, clock, active, bot, clockRole) {
+  function capturedMarkup(pieces){
+    const counts=new Map();array(pieces).forEach(p=>counts.set(p,(counts.get(p)||0)+1));
+    const names=['','pawn','knight','bishop','rook','queen','king'];
+    return '<div class="captured-pieces" aria-label="Captured pieces: '+escape(counts.size?[...counts].map(([p,n])=>n+' '+(p>0?'White ':'Black ')+names[Math.abs(p)]+(n>1?'s':'')).join(', '):'none')+'">'+(counts.size?[...counts].map(([p,n])=>'<span class="captured-group" data-captured-piece="'+p+'" data-count="'+n+'" aria-hidden="true">'+pieceSvg(p)+(n>1?'<span>'+n+'</span>':'')+'</span>').join(''):'<span class="captured-empty">No captures</span>')+'</div>';
+  }
+  function playerCard(name, detail, initialsValue, clock, active, bot, clockRole, captured) {
     return '<article class="player-card' + (active ? ' player-card--active' : '') + '"><span class="avatar' + (bot ? ' avatar--bot' : '') + '">' +
       escape(initialsValue) + '</span><div class="player-copy"><p class="player-name">' + escape(name) + '</p><p class="player-meta">' +
-      escape(detail) + '</p></div><span class="clock' + (active ? ' clock--active' : '') + '" data-clock="' + escape(clockRole) + '">' +
+      escape(detail) + '</p>'+capturedMarkup(captured)+'</div><span class="clock' + (active ? ' clock--active' : '') + '" data-clock="' + escape(clockRole) + '">' +
       escape(clock) + '</span></article>';
   }
 
   function coachMarkup(coach, match, finished) {
+    if(!match.local&&!match.ready&&!finished)return '<div class="coach-summary"><div><span class="coach-kicker">Connection interrupted</span><p class="coach-copy">Your board is saved. Keep both apps open to reconnect.</p></div><button class="button button--compact" type="button" data-transport="resume">Reconnect</button></div>';
     if (finished) return '<div class="coach-summary"><div><span class="coach-kicker">Game complete</span><p class="coach-copy">' + escape(match.note || gameResult(match)) + '</p></div></div>';
     if (!coach.copy && !coach.heading) return '<div class="coach-summary"><div><span class="coach-kicker">Last move</span><p class="coach-copy">' + escape(match.lastMove || 'Select a piece to see its legal moves.') + '</p></div></div>';
     const stage = Math.max(0, Math.min(3, Number(coach.stage) || 0));
@@ -544,8 +595,8 @@
     const coachAction = coachState.action || 'Hint';
     const takeback = !!match.canTakeback;
     return '<div class="game-actions game-actions--dock">' +
-      '<button class="button button--primary" type="button" data-action="coach" ' + (!coachState.available || coachState.loading ? 'disabled' : '') + '>' + icon('hint') + '<span>' + escape(coachAction === 'Preparing' ? 'Hint' : coachAction) + '</span></button>' +
-      '<button class="button" type="button" data-action="takeback" ' + (takeback ? '' : 'disabled') + '>' + icon('undo') + '<span>Take back</span></button>' +
+      (match.local?'<button class="button button--primary" type="button" data-action="coach" ' + (!coachState.available || coachState.loading ? 'disabled' : '') + '>' + icon('hint') + '<span>' + escape(coachAction === 'Preparing' ? 'Hint' : coachAction) + '</span></button>':'<button class="button button--primary" type="button" data-action="chat" '+(!match.ready?'disabled':'')+'>'+icon('room')+'Chat</button>') +
+      '<button class="button" type="button" data-action="takeback" ' + (takeback ? '' : 'disabled') + '>' + icon('undo') + '<span>'+(match.takebackPending?'Requested':match.local?'Take back':'Ask undo')+'</span></button>' +
       '<button class="button" type="button" data-action="moves">' + icon('moves') + 'Moves</button><button class="button" type="button" data-action="game-menu">' + icon('more') + 'More</button></div>';
   }
 
@@ -877,6 +928,7 @@
   }
 
   function selectSquare(square) {
+    if(model.screen==='sandbox'&&model.sandbox.editing){if(!movePending){movePending=true;sandboxCommand('place',{square,piece:sandboxPiece});}return;}
     if (movePending || !boardContext() || !boardContext().yourTurn) return;
     if (selectedSquare == null) {
       if (canSelectFrom(square)) {
@@ -903,7 +955,7 @@
     const position = object(boardContext().position, {});
     const valid = array(position.moves).some((move) => Number(move[0]) === from && Number(move[1]) === to);
     if (!valid) return false;
-    if (['review','puzzle'].includes(model.screen) && Math.abs(Number(position.b[from])) === 1 && (to < 8 || to >= 56)) {
+    if (['review','puzzle','sandbox'].includes(model.screen) && Math.abs(Number(position.b[from])) === 1 && (to < 8 || to >= 56)) {
       selectedSquare = null;
       overlay = {kind:'analysis-promotion',from,to,screen:model.screen,token:boardContext().token,positionSeq:position.seq,index:boardContext().index}; openSheet('promotion');
       sheetScroll.innerHTML = '<div class="sheet-heading"><h2 id="sheet-title" class="sheet-title">Choose your promotion</h2><button class="icon-button" type="button" data-sheet-close aria-label="Cancel">' + icon('close') + '</button></div><div class="choice-grid choice-grid--two">' + [[5,'Queen'],[4,'Rook'],[3,'Bishop'],[2,'Knight']].map(([piece,name])=>'<button class="choice" type="button" data-analysis-promotion="'+piece+'">'+name+'</button>').join('') + '</div>';
@@ -912,6 +964,7 @@
     selectedSquare = null;
     movePending = true;
     if (model.screen === 'puzzle') puzzleCommand('move', {from, to});
+    else if (model.screen === 'sandbox') sandboxCommand('move', {from,to});
     else if (model.screen === 'review') reviewCommand('try', {from, to});
     else send('match.move', {from: from, to: to});
     refreshBoardOnly();
@@ -1018,7 +1071,7 @@
     openSheet('room');
     sheetScroll.innerHTML = '<div class="sheet-heading"><div><p class="eyebrow">Nearby · no internet needed</p><h2 id="sheet-title" class="sheet-title">Play with a friend</h2><p class="sheet-subtitle">One phone hosts. The other joins. Choose your clock after connecting.</p></div><button class="icon-button" type="button" data-sheet-close aria-label="Close">' + icon('close') + '</button></div>' +
       '<section class="sheet-section"><button class="button button--primary button--wide" type="button" data-transport="host">Host nearby game</button><button class="button button--wide" type="button" data-transport="join">Join nearby game</button></section>' +
-      '<div class="online-note"><span aria-hidden="true">⌁</span><span>Bluetooth works in airplane mode after Android pairing and permission. Both players need Knightline Preview.</span></div>' +
+      '<div class="online-note"><span aria-hidden="true">⌁</span><span>Bluetooth works in airplane mode after Android pairing and permission. Both players need '+escape(model.edition)+'.</span></div>' +
       '<div class="sheet-footer"><button class="button button--quiet" type="button" data-sheet-close>Done</button></div>';
   }
 
@@ -1238,6 +1291,8 @@
       else if (value === 'feedback-settings') openFeedback();
       else if (value === 'setup-bot') openSetup('bot');
       else if (value === 'setup-pass') openSetup('pass');
+      else if (value === 'sandbox-open') send('sandbox.open',{},false);
+      else if (value === 'sandbox-options') openSandboxOptions();
       else if (value === 'transport-menu') openTransportMenu();
       else if (value === 'online-menu') openOnlineMenu();
       else if (value === 'remote-setup') openSetup('remote');
@@ -1245,6 +1300,7 @@
       else if (value === 'coach') send('coach.advance');
       else if (value === 'coach-details') openReading(model.match.coach.heading || 'Position coach', model.match.coach.copy+(model.match.endgame?'\n\n'+model.match.endgame.method:''));
       else if (value === 'takeback') send('match.takeback');
+      else if (value === 'chat') send('chat.open');
       else if (value === 'moves') send('match.openMoves');
       else if (value === 'game-menu') send('match.openMenu');
       else if (value === 'rematch') send('match.rematch');
@@ -1283,9 +1339,18 @@
     if (analysisPromotion && overlay?.kind === 'analysis-promotion') {
       const {from,to,screen,token,positionSeq,index} = overlay;
       closeOverlay(); movePending = true;
-      send(screen === 'review' ? 'review.try' : 'puzzle.move', {from,to,promotion:Number(analysisPromotion.dataset.analysisPromotion),index,token,positionSeq},screen === 'review');
+      send(screen === 'review' ? 'review.try' : screen==='sandbox'?'sandbox.move':'puzzle.move', {from,to,promotion:Number(analysisPromotion.dataset.analysisPromotion),index,token,positionSeq},screen === 'review');
       refreshBoardOnly(); return;
     }
+    const sandboxTool=event.target.closest('[data-sandbox-piece]');
+    if(sandboxTool){sandboxPiece=Number(sandboxTool.dataset.sandboxPiece);main.querySelectorAll('[data-sandbox-piece]').forEach(b=>b.setAttribute('aria-pressed',String(Number(b.dataset.sandboxPiece)===sandboxPiece)));return;}
+    const sandboxAction=event.target.closest('[data-sandbox]');
+    if(sandboxAction){const action=sandboxAction.dataset.sandbox;if(overlay&&action!=='evaluate')closeOverlay();sandboxCommand(action);return;}
+    const sandboxTurn=event.target.closest('[data-sandbox-turn]');
+    if(sandboxTurn){sandboxCommand('turn',{side:Number(sandboxTurn.dataset.sandboxTurn)});return;}
+    const sandboxRight=event.target.closest('[data-sandbox-right]');
+    if(sandboxRight){sandboxCommand('rights',{bit:Number(sandboxRight.dataset.sandboxRight)});return;}
+    if(event.target.closest('[data-sandbox-import]')){overlay.importSeq=model.sandbox.position.seq;sandboxCommand('import',{fen:sheetScroll.querySelector('#sandbox-fen').value});return;}
     const filter = event.target.closest('[data-review-filter]');
     if(filter) { reviewFilter = filter.dataset.reviewFilter; const scroll = sheetScroll.scrollTop; sheetScroll.innerHTML = reviewOverviewMarkup(); sheetScroll.scrollTop = scroll; return; }
     const collection = event.target.closest('[data-puzzle-filter]');

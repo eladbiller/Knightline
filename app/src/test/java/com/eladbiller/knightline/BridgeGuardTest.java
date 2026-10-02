@@ -69,5 +69,9 @@ public final class BridgeGuardTest {
             check(!BridgeGuard.requiresActiveMatch(type),type+" independent from current match");
         }
         check(!BridgeGuard.matchesActiveSession("live","archive:live",true),"Archived controls cannot mutate live game");
+        for(String type:new String[]{"sandbox.open","sandbox.move","sandbox.undo","sandbox.edit","sandbox.cancel","sandbox.place","sandbox.turn","sandbox.rights","sandbox.apply","sandbox.clear","sandbox.reset","sandbox.flip","sandbox.import","sandbox.evaluate"}){
+            check(guard.accept(1,type,type,seq++,true).accepted,type+" allowlisted");
+            check(!BridgeGuard.requiresActiveMatch(type),type+" uses independent native sandbox token");
+        }
     }
 }

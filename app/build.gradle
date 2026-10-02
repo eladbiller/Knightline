@@ -12,17 +12,19 @@ def requestedDebugKey = providers.gradleProperty('knightlineDebugStore').orNull
 def standardDebugKey = requestedDebugKey
         ? rootProject.file(requestedDebugKey)
         : new File(System.getProperty('user.home'), '.android/debug.keystore')
+def knightlineGpt = providers.gradleProperty('knightlineGpt').getOrElse('false').toBoolean()
 
 android {
     namespace 'com.eladbiller.knightline'
     compileSdk 35
 
     defaultConfig {
-        applicationId 'com.eladbiller.knightline'
+        applicationId knightlineGpt ? 'com.eladbiller.knightline.gpt' : 'com.eladbiller.knightline'
         minSdk 26
         targetSdk 35
-        versionCode 9
-        versionName '0.7.1-beta'
+        versionCode 10
+        versionName '0.8.0-beta'
+        manifestPlaceholders = [knightlineAppLabel: providers.gradleProperty('knightlineAppLabel').getOrElse(knightlineGpt ? 'Knightline Preview gpt version' : 'Knightline Preview')]
     }
 
     buildFeatures {

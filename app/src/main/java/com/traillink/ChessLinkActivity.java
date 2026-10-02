@@ -1491,6 +1491,23 @@ public class ChessLinkActivity extends MainActivity {
         updateClockViews();
     }
 
+    /** Keep remaining time, without awarding an increment for an undone move. */
+    void rebaseClockAfterTakeback() {
+        advanceClock();
+        clockTurn = game.turn; clockSeq = game.seq;
+        clockAnchor = android.os.SystemClock.elapsedRealtime();
+    }
+
+    void pauseRemoteClock() {
+        if(local)return;
+        advanceClock();clocksRunning=false;handler.removeCallbacks(clockLoop);
+    }
+    void resumeRemoteClock() {
+        if(local||!host||!ready||game==null||game.winner>=0||selectedClock==4||clocksRunning)return;
+        clockTurn=game.turn;clockSeq=game.seq;clockAnchor=android.os.SystemClock.elapsedRealtime();clocksRunning=true;
+        handler.removeCallbacks(clockLoop);handler.postDelayed(clockLoop,250);
+    }
+
     @Override void startGame(int id) {
         deferBoardUntilResume = false;
         super.startGame(id);

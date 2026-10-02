@@ -4,6 +4,14 @@ Knightline Preview is an offline-first Android chess beta with a local HTML/CSS/
 
 The interface is packaged inside the APK and served through Android's `WebViewAssetLoader` from a local HTTPS-style origin. No board library, font, UI code, or engine is downloaded at runtime.
 
+## Separate GPT edition
+
+The `gpt-version` branch adds captured-piece trays, an independent empty-board Sandbox, consensual multiplayer takebacks and interrupted-game recovery. Build with `gradle :app:assembleDebug -PknightlineGpt=true` for **Knightline Preview gpt version**, package `com.eladbiller.knightline.gpt`. It installs alongside the normal app, starts with fresh private storage, and uses its own Bluetooth service and online room namespace. Both players need the GPT edition for its multiplayer rooms. Building or downloading it does not upgrade or modify the normal app.
+
+Sandbox: Play → Sandbox. Place either color's pieces on an empty board, choose the side to move, then Play position. Standard legal positions require both kings; invalid edits remain editable with an explanation. Play both sides with a fixed orientation, offline Stockfish score, undo, optional board flip, explicit castling rights and FEN import. The draft and playable board survive restart independently. Neither changes your active match, rating or game history.
+
+Multiplayer: Ask undo requests your most recent move, including the opponent's reply if present. The opponent must agree. Acceptance makes both sides Practice; remaining clock time is retained, not reset. Requests expire after 30 seconds, a new position, game end or disconnection. Interrupted matches reconnect to the saved opponent/room; clocks pause while disconnected. Manual Disconnect stops automatic retry. See [GPT validation](docs/validation-gpt-v0.8.0.md) for exact coverage and limits.
+
 ## Included in the beta
 
 - Complete native chess rules: legal move validation, castling, en passant, promotion, checkmate, stalemate, threefold repetition, and the 50-move rule.
