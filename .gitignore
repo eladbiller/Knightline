@@ -8,3 +8,9 @@ local.properties
 *.keystore
 signing.properties
 captures/
+wdump*.xml
+*.log
+logcat*.txt
+*.mp4
+*.class
+bin/

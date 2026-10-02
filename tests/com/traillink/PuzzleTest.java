@@ -34,13 +34,11 @@ public class PuzzleTest {
         ChessReviewText mate = ChessReviewText.from("Best move found\nPlayed: Qh4#\nBest found: Qh4#\nReason\nEvaluation for Black: best mate in 1; played mate in 1.");
         check(mate.whiteScore == null && mate.whiteMate == -1 && mate.playedCompact.equals("M1"), "Mate graph/compact score");
         Game original = new ChessPuzzles(0).position;
-        int[] before = original.b.clone();
-        ChessReviewPractice retry = new ChessReviewPractice(original, new int[]{60,4,5});
-        check(!retry.play(60,52,5), "Retry accepted alternative");
-        check(Arrays.equals(before, original.b) && Arrays.equals(before, retry.position.b), "Retry changed saved board");
-        check(retry.play(60,4,5) && retry.complete, "Retry rejected recommendation");
-        check(Arrays.equals(before, original.b), "Correct retry changed saved board");
-        check(!retry.play(60,4,5), "Completed retry accepts stale move");
+        ChessReviewWorkspace workspace = new ChessReviewWorkspace(original, 0);
+        check(workspace.play(60, 4, 5), "Workspace played legal move");
+        check(workspace.length() == 1, "Workspace recorded variation move");
+        check(workspace.undo(), "Workspace undo succeeded");
+        check(workspace.length() == 0, "Workspace reverted to root");
         System.out.println("Puzzle and review checks passed: " + checks);
     }
 }

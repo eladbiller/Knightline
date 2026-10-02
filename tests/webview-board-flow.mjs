@@ -117,7 +117,10 @@ async function startGame() {
     await touch('[data-learn-section="openings"]', true);
     await touch('[data-lesson="0"]', true);
     await touch('[data-lesson-start]', true);
-  } else await touch('[data-action="setup-bot"]', true);
+  } else {
+    await touch('[data-nav="play"]');
+    await touch('[data-action="setup-bot"]', true);
+  }
   if (mode !== 'lesson') {
     await waitFor(`document.querySelector('#bottom-sheet').dataset.open === 'true'`, 'setup');
     await delay(350);
