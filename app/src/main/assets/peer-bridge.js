@@ -34,9 +34,15 @@ function openRoom(room,isHost,name){
   guestName=String(name||'Guest').slice(0,24);
   if(peer&&!peer.destroyed&&roomCode===code&&hosting===isHost){
     // Retain the host identity; recreating it races the signaling server's id release.
+    // Native starts a new epoch for every retry. A surviving data channel must
+    // acknowledge that epoch even while the independent signaling socket heals.
+    if(connection?.open){
+      tell('connected',{name:connection.metadata?.name||'Online friend',room:code});
+      if(peer.disconnected)try{peer.reconnect();}catch(_){}
+      return;
+    }
     if(peer.disconnected)try{peer.reconnect();}catch(_){}
     else if(!hosting)connectGuest(peer);
-    else if(connection?.open)tell('connected',{name:'Online friend',room:code});
     else tell('status',{text:'Room '+code+' open · waiting for your friend to reconnect'});
     return;
   }
@@ -50,7 +56,7 @@ function openRoom(room,isHost,name){
       else connectGuest(instance);
     });
     instance.on('connection',channel=>{
-      if(peer!==instance||!hosting||connection?.open){channel.close();return;}
+      if(peer!==instance||!hosting||connection){channel.close();return;}
       watch(channel,instance);
     });
     instance.on('disconnected',()=>{
@@ -70,6 +76,7 @@ function openRoom(room,isHost,name){
 function receive(command){
   if(!command||typeof command!=='object')return;
   if(command.type==='host'||command.type==='join'||command.type==='close'){
+    if(!Number.isSafeInteger(command.epoch)||command.epoch<epoch)return;
     epoch=command.epoch;
     const nextNamespace=command.namespace==='knightline-gpt-v2-'?'knightline-gpt-v2-':'knightline-v2-';
     if(namespace!==nextNamespace)closeRoom();namespace=nextNamespace;

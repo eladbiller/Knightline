@@ -6,11 +6,11 @@ The interface is packaged inside the APK and served through Android's `WebViewAs
 
 ## Separate GPT edition
 
-The `gpt-version` branch adds captured-piece trays, an independent empty-board Sandbox, consensual multiplayer takebacks and interrupted-game recovery. Build with `gradle :app:assembleDebug -PknightlineGpt=true` for **Knightline Preview gpt version**, package `com.eladbiller.knightline.gpt`. It installs alongside the normal app, starts with fresh private storage, and uses its own Bluetooth service and online room namespace. Both players need the GPT edition for its multiplayer rooms. Building or downloading it does not upgrade or modify the normal app.
+The `gpt-version` branch adds captured-piece trays, an independent empty-board Sandbox, consensual multiplayer takebacks and interrupted-game recovery. Build with `gradle :app:assembleDebug -PknightlineGpt=true` for **Knightline Preview gpt version**, package `com.eladbiller.knightline.gpt`. It installs alongside the normal app, starts with fresh private storage, and uses its own Bluetooth service and online room namespace. Both players need the GPT edition for its multiplayer rooms. Installing it does not upgrade or modify the normal app. See the [0.8.1 GPT beta release](https://github.com/eladbiller/Knightline/releases/tag/v0.8.1-gpt-beta) and [exact validation coverage](docs/validation-gpt-v0.8.1.md).
 
 Sandbox: Play → Sandbox. Place either color's pieces on an empty board, choose the side to move, then Play position. Standard legal positions require both kings; invalid edits remain editable with an explanation. Play both sides with a fixed orientation, offline Stockfish score, undo, optional board flip, explicit castling rights and FEN import. The draft and playable board survive restart independently. Neither changes your active match, rating or game history.
 
-Multiplayer: Ask undo requests your most recent move, including the opponent's reply if present. The opponent must agree. Acceptance makes both sides Practice; remaining clock time is retained, not reset. Requests expire after 30 seconds, a new position, game end or disconnection. Interrupted matches reconnect to the saved opponent/room; clocks pause while disconnected. Manual Disconnect stops automatic retry. See [GPT validation](docs/validation-gpt-v0.8.0.md) for exact coverage and limits.
+Multiplayer: Ask undo requests your most recent move, including the opponent's reply if present. The opponent must agree. Acceptance makes both sides Practice; remaining clock time is retained, not reset. Requests expire after 30 seconds, a new position, game end or disconnection. Interrupted matches and connected pre-game rooms reconnect to the saved opponent/room; clocks pause while disconnected. Recovery shows its retry state and stops after eight attempts, with a manual Reconnect action. Disconnect remains paused across app restart. Transport recovery does not eject either player from Sandbox or review. See [GPT validation](docs/validation-gpt-v0.8.1.md) for exact coverage and limits.
 
 ## Included in the beta
 
@@ -53,7 +53,7 @@ Keep release-signing files outside the repository; `.gitignore` excludes keystor
 
 ## Validation status
 
-See [v0.7.1 flow validation](docs/validation-v0.7.1.md) for the current changes and limits. The native CLI suites pass 42,344 checks in total, including legal replay of every packaged puzzle, endgame patterns in both colors, visible mistakes/Undo, permanent assistance, archive retention/isolation, lesson exclusion, contextual navigation, bridge and rating checks. Another 277 JavaScript assertions cover evaluation-rail orientation, White-perspective scores and Black-first custom-position notation. These are real test runs, not an empty Gradle/JUnit result.
+For the current GPT branch, see [0.8.1 validation](docs/validation-gpt-v0.8.1.md): 42,434 native/lifecycle assertions, JavaScript checks, final-package Pixel offline flows, real-phone Bluetooth and two-emulator PeerJS. Physical-phone online coverage remains incomplete in this run. The earlier normal-edition baseline is documented in [v0.7.1 flow validation](docs/validation-v0.7.1.md), including puzzles, endgames, archive isolation, navigation, bridge and ratings. Counts are real assertion runs, not empty Gradle/JUnit results.
 
 Prior beta Pixel coverage includes:
 

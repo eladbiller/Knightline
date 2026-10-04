@@ -9,12 +9,12 @@ async function captures(total){for(const d of [a,b])await d.wait(`[...document.q
 async function move(d,uci){const before=await board(d);await d.move(uci);const until=Date.now()+5000;while(JSON.stringify(await board(d))===JSON.stringify(before)&&Date.now()<until)await delay(100);assert.notDeepEqual(await board(d),before,'move '+uci);return sync();}
 async function consent(sender,receiver,accept){await sender.touch('[data-action="takeback"]');await receiver.wait(`document.querySelector('#sheet-title')?.innerText==='Allow takeback?'`,'opponent consent');await receiver.touch('[data-confirm="'+(accept?'accept':'cancel')+'"]');await sender.wait(`document.querySelector('[data-action="takeback"]')?.innerText!=='Requested'`,'request resolved');}
 async function returnGame(d){await d.home();await d.touch('[data-action="resume"]');await d.wait(`document.querySelector('#app').dataset.screen==='game'`,'game');}
-async function restart(d){d.close();d.adb('shell','am','start','-n','com.eladbiller.knightline/com.traillink.KnightlineActivity');await delay(1200);await d.connect();}
+async function restart(d){d.close();d.adb('shell','am','start','-n',d.appId+'/com.traillink.KnightlineActivity');await delay(1200);await d.connect();}
 async function connected(d){await d.wait(`document.querySelector('.header-status')?.innerText.includes('Connected')||document.querySelector('.header-status')?.innerText.includes('Private room')`,'automatic reconnect',65000);}
 try{
   await Promise.all([a.connect(),b.connect()]);await Promise.all([a.auditStart(),b.auditStart()]);
   const white=await a.read(`document.querySelector('[data-square]').dataset.square==='0'`)?a:b,black=white===a?b:a;
-  const recorders=[a.record('knightline-v080-'+transport+'-takeback-host',45),b.record('knightline-v080-'+transport+'-takeback-guest',45)];
+  const recorders=[a.record('knightline-v081-'+transport+'-takeback-host',45),b.record('knightline-v081-'+transport+'-takeback-guest',45)];
   await move(white,'e2e4');const beforeCapture=await move(black,'d7d5');await move(white,'e4d5');await captures(1);const four=await move(black,'d8d5');await captures(2);
   for(const d of [a,b]){const labels=await d.read(`[...document.querySelectorAll('.captured-pieces')].map(e=>e.getAttribute('aria-label'))`);assert(labels.some(s=>s.includes('Black pawn'))&&labels.some(s=>s.includes('White pawn')));}
   await consent(black,white,false);await sync(four);await captures(2);console.log('PASS decline preserves board and captures');
@@ -26,12 +26,13 @@ try{
   const five=await move(white,'g1f3');await black.wait(`document.querySelector('#bottom-sheet').dataset.open!=='true'`,'stale consent dismissed');await sync(five);
   console.log('PASS newer move expires consent without undoing anything');
   await Promise.all(recorders.map(r=>new Promise(resolve=>r.exitCode!==null?resolve():r.once('close',resolve))));
-  a.adb('pull',a.recordPath,'../../work/knightline-v080-'+transport+'-takeback-host.mp4');b.adb('pull',b.recordPath,'../../work/knightline-v080-'+transport+'-takeback-guest.mp4');
+  for(const d of [a,b]){const audit=await d.auditEnd();assert.deepEqual(audit.errors,[],'takeback flow geometry');console.log('Takeback frame audit',audit);}
+  a.adb('pull',a.recordPath,'../../work/knightline-v081-'+transport+'-takeback-host.mp4');b.adb('pull',b.recordPath,'../../work/knightline-v081-'+transport+'-takeback-guest.mp4');
   // Kill each app in turn: the surviving phone must notice loss and recover
   // without a picker, a new invitation, or replacing the saved position.
   for(const [lost,survivor] of [[b,a],[a,b]]){
-    lost.adb('shell','am','force-stop','com.eladbiller.knightline');
-    await survivor.wait(`document.body.innerText.toLowerCase().includes('connection interrupted')`,'loss detected',25000);
+    lost.adb('shell','am','force-stop',lost.appId);
+    await survivor.wait(`!!document.querySelector('[data-transport="resume"]')`,'loss detected',25000);
     await restart(lost);await Promise.all([connected(lost),connected(survivor)]);
     if(await lost.read(`document.querySelector('#app').dataset.screen!=='game'`))await returnGame(lost);
     if(await survivor.read(`document.querySelector('#app').dataset.screen!=='game'`))await returnGame(survivor);
@@ -41,7 +42,7 @@ try{
   for(const d of [a,b]){
     await d.touch('[data-action="moves"]');await d.wait(`document.querySelectorAll('.move-item').length===6`,'six moves after takeback/reconnect');await d.back();
     const layout=await d.read(`(()=>{const m=document.querySelector('#main-content'),r=document.querySelector('.board').getBoundingClientRect();return {scroll:m.scrollHeight-m.clientHeight,aspect:Math.abs(r.width-r.height),width:r.width,scale:visualViewport.scale}})()`);
-    assert(layout.scroll<2&&layout.aspect<1&&layout.scale===1,JSON.stringify(layout));d.screenshot('../../work/knightline-v080-'+transport+'-'+(d===a?'host':'guest')+'.png');console.log(layout);
+    assert(layout.scroll<2&&layout.aspect<1&&layout.scale===1,JSON.stringify(layout));d.screenshot('../../work/knightline-v081-'+transport+'-'+(d===a?'host':'guest')+'.png');console.log(layout);
   }
   console.log('PASS playable after reconnect with preserved six-move history');
 }catch(e){for(const d of [a,b])try{console.error(await d.state());}catch{}throw e;}finally{a.close();b.close();}

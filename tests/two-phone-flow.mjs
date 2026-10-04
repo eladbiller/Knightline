@@ -12,6 +12,8 @@ const text=d=>d.read('document.body.innerText');
 async function closed(d){await d.wait(`document.querySelector('#bottom-sheet').dataset.open!=='true'`,'sheet closed');}
 async function game(d){await d.wait(`document.querySelector('#app').dataset.screen==='game'`,'game');await closed(d);}
 async function nativeAllow(d,optional=false){
+  const focus=d.adb('shell','dumpsys','window').split('\n').find(line=>line.includes('mCurrentFocus='))||'';
+  if(optional&&focus.includes(d.appId+'/'))return false;
   d.adb('shell','uiautomator','dump','/sdcard/knightline-window.xml');
   const xml=d.adb('shell','cat','/sdcard/knightline-window.xml');
   const nodes=[...xml.matchAll(/<node\b[^>]+/g)].map(m=>m[0]);

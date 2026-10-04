@@ -4,7 +4,7 @@ const d=new AndroidDevice(process.env.SERIAL||'emulator-5554',9223);
 try{
   await d.connect();await d.home();await d.touch('[data-nav="play"]');await d.touch('[data-action="sandbox-open"]');
   await d.wait(`document.querySelector('#app').dataset.screen==='sandbox'`,'sandbox');await d.auditStart();
-  const recorder=d.record('knightline-v080-sandbox',45);
+  const recorder=d.record('knightline-v081-sandbox',45);
   if(!await d.read(`!!document.querySelector('[data-sandbox="clear"]')`))await d.touch('[data-sandbox="edit"]');
   await d.touch('[data-sandbox="clear"]');
   await d.touch('[data-sandbox-turn="0"]');
@@ -29,7 +29,7 @@ try{
   await d.move('a7b8');await d.touch('[data-analysis-promotion="2"]');await d.wait(`document.querySelector('[data-square="1"]').getAttribute('aria-label').includes('White knight')`,'underpromotion');
   const geometry=await d.read(`(()=>{const m=document.querySelector('#main-content'),b=document.querySelector('.board').getBoundingClientRect();return {width:b.width,height:b.height,overflow:m.scrollHeight-m.clientHeight,scale:visualViewport.scale}})()`);
   assert(Math.abs(geometry.width-geometry.height)<1&&geometry.overflow<2&&geometry.scale===1,JSON.stringify(geometry));
-  d.screenshot('../../work/knightline-v080-sandbox.png');console.log('PASS sandbox UI: empty editor, invalid position, both sides, fixed orientation, undo, cancel, navigation, offline score, FEN, underpromotion',geometry);
-  await new Promise(resolve=>recorder.exitCode!==null?resolve():recorder.once('close',resolve));d.adb('pull',d.recordPath,'../../work/knightline-v080-sandbox.mp4');
+  d.screenshot('../../work/knightline-v081-sandbox.png');console.log('PASS sandbox UI: empty editor, invalid position, both sides, fixed orientation, undo, cancel, navigation, offline score, FEN, underpromotion',geometry);
+  await new Promise(resolve=>recorder.exitCode!==null?resolve():recorder.once('close',resolve));d.adb('pull',d.recordPath,'../../work/knightline-v081-sandbox.mp4');
   const audit=await d.auditEnd();assert.deepEqual(audit.errors,[]);console.log(audit);
 }finally{d.close();}

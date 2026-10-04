@@ -1,0 +1,25 @@
+import assert from 'node:assert/strict';
+import {readFileSync} from 'node:fs';
+import vm from 'node:vm';
+const source=readFileSync('app/src/main/assets/ui/app.js','utf8');
+const code=source.match(/  function recoveryCopy\(\) \{[\s\S]*?\n  \}/)[0];
+const model={match:null,transport:{}};
+const copy=vm.runInNewContext(code+'\nrecoveryCopy',{model,object:(x,f)=>x&&typeof x==='object'?x:f});
+model.transport={recovery:'retrying',attempt:2,attemptLimit:8};
+assert(copy().copy.includes('Your room code is unchanged.'));
+assert(copy().copy.includes('Attempt 2 of 8.'));
+// Real native matches have a position, not an `available` flag.
+model.match={position:{b:[],seq:2},local:false};
+assert(copy().copy.includes('Your board is saved.'));
+model.transport.recovery='paused';
+assert.equal(copy().title,'Connection paused');
+assert(copy().copy.includes('Your board is saved.'));
+assert.equal(copy().action,'Reconnect');
+model.transport.recovery='checking';
+assert.equal(copy().title,'Checking saved game…');
+model.transport.recovery='exhausted';model.transport.status='Automatic retries stopped.';
+assert.equal(copy().title,'Connection interrupted');
+assert.equal(copy().copy,'Automatic retries stopped.');
+model.transport.recovery='blocked';model.transport.status='Different saved games.';
+assert.equal(copy().copy,'Different saved games.');
+console.log('Recovery copy PASS: 10 assertions using the packaged UI function');

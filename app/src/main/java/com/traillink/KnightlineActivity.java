@@ -118,6 +118,7 @@ public final class KnightlineActivity extends ChessLinkActivity {
     private String sandboxEvaluationState = "Analyzing…";
     private long sandboxSearchGeneration;
     private boolean reconnectAllowed=true, remoteForeground;
+    private String reconnectState="idle";
     private int reconnectAttempts;
     private long lastRemoteFrame;
     private final Runnable reconnectLoop=()->attemptRemoteReconnect();
@@ -134,6 +135,8 @@ public final class KnightlineActivity extends ChessLinkActivity {
         // MainActivity restores its native save and calls the virtual home().
         // Our home() deliberately queues state until this safe local page is ready.
         super.onCreate(bundle);
+        reconnectAllowed=getSharedPreferences("knightline-connection",MODE_PRIVATE).getBoolean("autoReconnect",true);
+        if(!reconnectAllowed)reconnectState="paused";
         privateRating = new SkillRatingStore(new AndroidPrivateRatingStorage(this));
         ratingOutcomeSession = getSharedPreferences("knightline-rating-session", MODE_PRIVATE)
                 .getString("completed", "");
@@ -429,6 +432,7 @@ public final class KnightlineActivity extends ChessLinkActivity {
             ready=false;peer=name==null?"Friend":name;peerAddress=address;
             lastRemoteFrame=android.os.SystemClock.elapsedRealtime();
             status="Connected · checking saved game";
+            reconnectState="checking";
             send(obj("type","hello","version",protocolVersion(),"resumeSession",session));
             postEvent("transport",transportPayload());
         });
@@ -449,7 +453,7 @@ public final class KnightlineActivity extends ChessLinkActivity {
         }
         if (game != null || state != null) option(choices, "match.clear", "Clear saved game", "Remove this local saved match");
         if (ready && !local) option(choices, "chat.open", "Private chat", "Message the connected Knightline player");
-        if (ready) option(choices, "transport.disconnect", "Disconnect", "Leave this private room");
+        if (!local && (ready || !savedPeer.isEmpty())) option(choices, "transport.disconnect", "Disconnect", "Pause the connection and keep your saved game");
         option(choices, "engine.info", "Stockfish engine", "Offline engine, license and source notice");
         option(choices, "transport.settings", "Bluetooth setup", "Pair and discover a nearby Knightline phone");
         JSONObject payload = obj("kind", "menu", "title", "Game menu",
@@ -593,16 +597,41 @@ public final class KnightlineActivity extends ChessLinkActivity {
             String otherSession=message.optString("resumeSession");
             if(message.optInt("version",-1)!=protocolVersion()||(!session.isEmpty()&&!otherSession.isEmpty()&&!session.equals(otherSession))){
                 reconnectAllowed=false;handler.removeCallbacks(reconnectLoop);link.close();ready=false;pauseRemoteClock();
+                reconnectState="blocked";
                 status=message.optInt("version",-1)!=protocolVersion()?"Version mismatch · update Knightline on both phones":"These phones have different saved games. Start a new room to play together.";
                 notice(status,true);publishState();return;
             }
+            if(!savedPeer.isEmpty()&&!savedPeer.equals(peerAddress)){
+                reconnectAllowed=false;reconnectState="blocked";handler.removeCallbacks(reconnectLoop);
+                link.close();ready=false;pauseRemoteClock();status="This is not the saved opponent. Start a new room to play together.";
+                notice(status,true);publishState();return;
+            }
+            // The legacy native screen handshake calls home() for every guest.
+            // A transport recovery is not navigation: keep Sandbox, review and
+            // other foreground screens intact for both roles.
+            ready=true;reconnectState="connected";reconnectAttempts=0;handler.removeCallbacks(reconnectLoop);
+            status="Connected to "+peer+(link instanceof PeerLink?" · Private online room":" · Bluetooth");
+            // A connected room needs a recovery target even before its first game.
+            if(savedPeer.isEmpty()){savedPeer=peerAddress;save();}
+            resumeRemoteClock();
+            if(host){if(game!=null)showSnapshot();else send(obj("type","room"));}
+            if(resumeRemotePending&&state!=null){resumeRemotePending=false;requestedScreen="game";renderGame();}
+            ensureFriendRatingExchange(true);postEvent("transport",transportPayload());publishState();return;
+        }
+        if("room".equals(message.optString("type"))&&ready&&!host&&!local){
+            // Legacy room handling clears the saved peer and navigates Home.
+            // Retain the room identity, and never let an empty remote room erase
+            // this phone's saved match when the host has lost its copy.
+            if(state!=null){
+                reconnectAllowed=false;reconnectState="blocked";handler.removeCallbacks(reconnectLoop);
+                link.close();ready=false;pauseRemoteClock();
+                status="Your friend no longer has this saved game. Your board is kept. Start a new room to play together.";
+                notice(status,true);
+            }else{savedPeer=peerAddress;save();}
+            postEvent("transport",transportPayload());publishState();return;
         }
         if (message.optString("type").startsWith("takeback-")) { handleTakebackMessage(message); return; }
         if ("state".equals(message.optString("type")) && !host && ready && !local) {
-            if (!takebackId.isEmpty() && (!session.equals(message.optString("session"))
-                    || message.optInt("seq",-1)!=takebackSequence || message.optInt("winner",-1)>=0)) clearTakeback();
-            // Integrity is part of every authoritative snapshot, including reconnect.
-            usedTakeback = message.optBoolean("takebackUsed",false);
             if (session.equals(message.optString("session")) && state!=null
                     && message.optInt("seq",-1)<state.optInt("seq",-1)) return;
         }
@@ -624,15 +653,11 @@ public final class KnightlineActivity extends ChessLinkActivity {
         String previousSession = session;
         super.message(message);
         if ("decline".equals(message.optString("type"))) { outgoingRemoteClock = -1; publishState(); }
-        if ("hello".equals(message.optString("type")) && ready && resumeRemotePending && state != null) {
-            resumeRemotePending = false; requestedScreen = "game"; renderGame();
-        }
-        if ("hello".equals(message.optString("type")) && ready) {
-            reconnectAttempts=0;handler.removeCallbacks(reconnectLoop);resumeRemoteClock();
-            if(host&&game!=null)showSnapshot();
-            ensureFriendRatingExchange(true);
-        }
-        if (message != null && "state".equals(message.optString("type"))) {
+        if ("state".equals(message.optString("type")) && state == message) {
+            // Rejected/old frames must not dismiss current consent or restore
+            // rating eligibility. Update integrity only after native acceptance.
+            if (!takebackId.isEmpty() && (message.optInt("seq",-1)!=takebackSequence
+                    || message.optInt("winner",-1)>=0)) clearTakeback();
             // A validated new friend game may open its board. Later peer/engine
             // updates must not navigate away from an archive, puzzle or Home.
             if (state == message && !session.equals(previousSession)) {
@@ -645,6 +670,7 @@ public final class KnightlineActivity extends ChessLinkActivity {
             handler.post(this::ensureFriendRatingExchange);
             usedTakeback = message.optBoolean("takebackUsed",false);
             persistSessionIntegrityState();
+            publishState();
         }
     }
 
@@ -749,34 +775,51 @@ public final class KnightlineActivity extends ChessLinkActivity {
     }
 
     @Override void startBluetoothConfirmed(boolean hosting) {
-        reconnectAllowed=true;reconnectAttempts=0;handler.removeCallbacks(reconnectLoop);
+        allowReconnect();
         super.startBluetoothConfirmed(hosting);
         resetFriendLearningState(); publishState();
     }
 
     @Override void beginOnlineConfirmed(boolean hosting, String code) {
-        reconnectAllowed=true;reconnectAttempts=0;handler.removeCallbacks(reconnectLoop);
+        allowReconnect();
         super.beginOnlineConfirmed(hosting, code);
-        resetFriendLearningState(); publishState();
+        resetFriendLearningState(); save(); publishState();
     }
 
     private void resumeRemote() {
-        if (local || state == null || state.optInt("winner", -1) >= 0 || savedPeer.isEmpty()) {
-            reject("There is no unfinished friend game to reconnect."); return;
+        if (local || (state != null && state.optInt("winner", -1) >= 0) || savedPeer.isEmpty()) {
+            reject("There is no saved game or room to reconnect."); return;
         }
         if (ready) { requestedScreen = "game"; renderGame(); return; }
-        resumeRemotePending = true;reconnectAllowed=true;reconnectAttempts=0;
-        handler.removeCallbacks(reconnectLoop);attemptRemoteReconnect();
+        resumeRemotePending = state!=null;allowReconnect();attemptRemoteReconnect();
     }
 
-    private boolean canReconnect(){return !destroyed&&remoteForeground&&reconnectAllowed&&!local&&!ready&&state!=null&&state.optInt("winner",-1)<0&&!savedPeer.isEmpty();}
+    private void allowReconnect(){
+        reconnectAllowed=true;reconnectAttempts=0;reconnectState="idle";handler.removeCallbacks(reconnectLoop);
+        getSharedPreferences("knightline-connection",MODE_PRIVATE).edit().putBoolean("autoReconnect",true).apply();
+    }
+
+    private void stopReconnect(){
+        reconnectAllowed=false;reconnectState="paused";resumeRemotePending=false;handler.removeCallbacks(reconnectLoop);
+        getSharedPreferences("knightline-connection",MODE_PRIVATE).edit().putBoolean("autoReconnect",false).apply();
+    }
+
+    private boolean canReconnect(){return !destroyed&&remoteForeground&&reconnectAllowed&&!local&&!ready&&(state==null||state.optInt("winner",-1)<0)&&!savedPeer.isEmpty();}
     private void scheduleReconnect(){
         handler.removeCallbacks(reconnectLoop);
-        if(canReconnect()&&reconnectAttempts<8)handler.postDelayed(reconnectLoop,Math.min(8_000,1000L<<Math.min(reconnectAttempts,3)));
+        if(!canReconnect())return;
+        if(reconnectAttempts>=8){
+            reconnectState="exhausted";status="Automatic retries stopped. Check the connection, then tap Reconnect.";
+        }else{
+            reconnectState="retrying";
+            handler.postDelayed(reconnectLoop,Math.min(8_000,1000L<<Math.min(reconnectAttempts,3)));
+        }
+        postEvent("transport",transportPayload());publishState();
     }
     private void attemptRemoteReconnect(){
         if(!canReconnect())return;
-        if(reconnectAttempts>=8){status="Could not reconnect yet. Keep both apps open, then tap Reconnect.";publishState();return;}
+        if(reconnectAttempts>=8){scheduleReconnect();return;}
+        reconnectState="retrying";
         reconnectAttempts++;
         try{
             if(savedPeer.startsWith("peerjs:")){
@@ -976,7 +1019,7 @@ public final class KnightlineActivity extends ChessLinkActivity {
             case "transport.scan": scan(); return;
             case "transport.connect": joinNearby(payload); return;
             case "transport.resume": resumeRemote(); return;
-            case "transport.disconnect": reconnectAllowed=false;handler.removeCallbacks(reconnectLoop);clearTakeback();link.close();ready=false;pauseRemoteClock();save();status="Disconnected · game saved";home();return;
+            case "transport.disconnect": stopReconnect();clearTakeback();link.close();ready=false;pauseRemoteClock();save();status="Disconnected · game saved";home();return;
             case "transport.settings": openBluetoothSettings(); return;
             case "online.host": beginOnlineRoom(true, payload); return;
             case "online.join": beginOnlineRoom(false, payload); return;
@@ -1889,6 +1932,7 @@ public final class KnightlineActivity extends ChessLinkActivity {
                     "paired", device.getBondState() == BluetoothDevice.BOND_BONDED));
         }
         return obj("ready", ready, "hosting", host, "status", status, "peer", peer, "inviting", pendingGame >= 0,
+                "recovery",reconnectState,"attempt",reconnectAttempts,"attemptLimit",8,"hasRoom",!local&&!savedPeer.isEmpty(),
                 "kind", savedPeer.startsWith("peerjs:") ? "online" : "bluetooth", "devices", devices);
     }
 

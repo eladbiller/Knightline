@@ -22,8 +22,8 @@ android {
         applicationId knightlineGpt ? 'com.eladbiller.knightline.gpt' : 'com.eladbiller.knightline'
         minSdk 26
         targetSdk 35
-        versionCode 10
-        versionName '0.8.0-beta'
+        versionCode knightlineGpt ? 11 : 10
+        versionName knightlineGpt ? '0.8.1-beta' : '0.8.0-beta'
         manifestPlaceholders = [knightlineAppLabel: providers.gradleProperty('knightlineAppLabel').getOrElse(knightlineGpt ? 'Knightline Preview gpt version' : 'Knightline Preview')]
     }
 

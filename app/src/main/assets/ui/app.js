@@ -345,7 +345,8 @@
   function roomStatusCard(match) {
     const transport = object(model.transport, {});
     const activelyOpening = /creating|opening|waiting|connecting|created|join|room open|room .* ready/i.test(String(transport.status || ''));
-    if (match && !match.local && !transport.ready && match.winner < 0) return '<article class="surface room-status"><p class="eyebrow">Your game is saved</p><h2 class="surface-title">'+(activelyOpening?'Reconnecting…':'Connection interrupted')+'</h2><p class="subtitle">'+escape(activelyOpening?transport.status:'Both players: tap Reconnect to continue the same board.')+'</p><button class="button button--primary" type="button" data-transport="resume">'+(activelyOpening?'Retry reconnect':'Reconnect')+'</button></article>';
+    if (match && !match.local && !transport.ready && match.winner < 0) {const r=recoveryCopy();return '<article class="surface room-status"><p class="eyebrow">Your game is saved</p><h2 class="surface-title">'+r.title+'</h2><p class="subtitle">'+escape(r.copy)+'</p><button class="button button--primary" type="button" data-transport="resume">'+r.action+'</button></article>';}
+    if(!match&&transport.hasRoom&&!transport.ready&&['retrying','checking','blocked','exhausted','paused'].includes(transport.recovery)){const r=recoveryCopy();return '<article class="surface room-status"><p class="eyebrow">'+escape(transport.peer||'Private room')+'</p><h2 class="surface-title">'+r.title+'</h2><p class="subtitle">'+escape(r.copy)+'</p><button class="button button--primary" type="button" data-transport="resume">'+r.action+'</button></article>';}
     if (match || (!transport.ready && !activelyOpening)) return '';
     const roomName = String(transport.peer || '').trim() || 'Private room';
     if (transport.ready) {
@@ -358,6 +359,15 @@
     }
     return '<article class="surface room-status"><p class="eyebrow">'+(transport.kind==='online'?'Share this room code':'Nearby Bluetooth')+'</p><h2 class="surface-title">'+escape(transport.kind==='online'?roomName:'Waiting for your friend')+'</h2><p class="subtitle">' +
       escape(transport.status || roomName + ' is opening.') + '</p><p class="body-copy">'+(transport.kind==='online'?'Ask your friend to join using the same room code.':'On the other phone: Nearby game → Join nearby game → select this phone. Keep both apps open.')+'</p></article>';
+  }
+
+  function recoveryCopy() {
+    const t=object(model.transport,{});
+    const saved=model.match?'Your board is saved. ':'Your room code is unchanged. ';
+    if(t.recovery==='paused')return {title:'Connection paused',copy:'You disconnected. '+saved+'Reconnect when you are ready.',action:'Reconnect'};
+    if(t.recovery==='checking')return {title:'Checking saved game…',copy:'Connected to your friend. Verifying that both phones have the same game.',action:'Retry now'};
+    if(t.recovery==='retrying')return {title:'Reconnecting…',copy:saved+'Keep both apps open. Attempt '+Math.max(1,t.attempt||0)+' of '+(t.attemptLimit||8)+'.',action:'Retry now'};
+    return {title:'Connection interrupted',copy:t.recovery==='exhausted'||t.recovery==='blocked'?t.status:saved+'Tap Reconnect to continue.',action:'Reconnect'};
   }
 
   function quickCard(iconName, title, detail, action) {
@@ -574,7 +584,7 @@
   }
 
   function coachMarkup(coach, match, finished) {
-    if(!match.local&&!match.ready&&!finished)return '<div class="coach-summary"><div><span class="coach-kicker">Connection interrupted</span><p class="coach-copy">Your board is saved. Keep both apps open to reconnect.</p></div><button class="button button--compact" type="button" data-transport="resume">Reconnect</button></div>';
+    if(!match.local&&!match.ready&&!finished){const r=recoveryCopy();return '<div class="coach-summary"><div><span class="coach-kicker">'+r.title+'</span><p class="coach-copy">'+escape(r.copy)+'</p></div><button class="button button--compact" type="button" data-transport="resume">'+r.action+'</button></div>';}
     if (finished) return '<div class="coach-summary"><div><span class="coach-kicker">Game complete</span><p class="coach-copy">' + escape(match.note || gameResult(match)) + '</p></div></div>';
     if (!coach.copy && !coach.heading) return '<div class="coach-summary"><div><span class="coach-kicker">Last move</span><p class="coach-copy">' + escape(match.lastMove || 'Select a piece to see its legal moves.') + '</p></div></div>';
     const stage = Math.max(0, Math.min(3, Number(coach.stage) || 0));
