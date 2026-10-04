@@ -46,7 +46,9 @@ public final class PeerLink extends BluetoothLink {
     private WebMessagePort port;
     private boolean pageReady;
     private JSONObject pending;
-    private boolean intentionallyClosed;
+    private boolean intentionallyClosed = true;
+
+    public boolean isClosed() { return intentionallyClosed; }
 
     @SuppressLint("SetJavaScriptEnabled")
     public PeerLink(Context context, Listener callback) {

@@ -69,6 +69,10 @@
       settings: '<circle cx="12" cy="12" r="3"/><path d="M12 2.8v2M12 19.2v2M2.8 12h2M19.2 12h2M5.5 5.5l1.4 1.4m10.2 10.2 1.4 1.4m0-13-1.4 1.4M6.9 17.1l-1.4 1.4"/>',
       check: '<path d="m5 12 4 4 10-10"/>',
       review: '<path d="M4 5h16v14H4Z"/><path d="M8 15v-3m4 3V8m4 7v-5"/>',
+      rotate: '<path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.85.99 6.57 2.57L21 8M21 3v5h-5"/>',
+      copy: '<rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>',
+      sandbox: '<path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/>',
+      redo: '<path d="M16 7h5v-5M20.5 7A9 9 0 1 0 20 18"/>',
     };
     return '<svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">' + (paths[name] || paths.more) + '</svg>';
   }
@@ -152,13 +156,14 @@
     model.puzzle = object(payload.puzzle, {});
     model.archive = object(payload.archive, model.archive);
     model.settings = object(payload.settings, model.settings);
+    model.sandbox = object(payload.sandbox, model.sandbox);
     if(previousPosition!==boardPositionKey())selectedSquare=null;
     if (boardDrag && boardDrag.key !== boardPositionKey()) cancelBoardDrag();
     // Any authoritative state response completes (or rejects) the one pending
     // board command. This prevents rapid taps from queuing a second move against
     // a position that is already changing natively.
     movePending = false;
-    if (!model.match && model.screen === 'game' || !model.review.available && model.screen === 'review') model.screen = 'home';
+    if (!model.match && model.screen === 'game' || !model.review.available && model.screen === 'review' || !model.sandbox && model.screen === 'sandbox') model.screen = 'home';
     if (selectedSquare != null && !canSelectFrom(selectedSquare)) selectedSquare = null;
     render();
     if (overlay?.kind === 'feedback') patchFeedback();
@@ -189,8 +194,10 @@
       }
     } else if (event.type === 'transport') {
       model.transport = payload;
+      if (payload && payload.ready) movePending = false;
       patchHeader();
       if (model.screen === 'game') renderGame();
+      else if (model.screen === 'home' || model.screen === 'play') render();
       if (overlay && overlay.kind === 'nearby') updateNearbySheet();
     } else if (event.type === 'notice') {
       toast(payload.message || '', !!payload.error);
@@ -224,6 +231,7 @@
     patchHeader();
     patchNavigation();
     if (model.screen === 'play') renderPlay();
+    else if (model.screen === 'sandbox') renderSandbox();
     else if (model.screen === 'learn') renderLearn();
     else if (model.screen === 'profile') renderProfile();
     else if (model.screen === 'history') renderHistory();
@@ -247,6 +255,10 @@
       header.innerHTML = '<div class="header-brand"><button class="header-back" type="button" data-action="nav-learn" aria-label="Back to Learn">' + icon('back') + '</button><p class="brand-word">Puzzle practice</p></div><span class="header-status">Offline</span>';
       return;
     }
+    if (model.screen === 'sandbox') {
+      header.innerHTML = '<div class="header-brand"><button class="header-back" type="button" data-action="nav-play" aria-label="Back to Play">' + icon('back') + '</button><p class="brand-word">Sandbox</p></div><span class="header-status">Analysis</span>';
+      return;
+    }
     if (model.screen === 'history') {
       header.innerHTML = '<div class="header-brand"><div class="brand-mark" aria-hidden="true">' + knightIcon() + '</div><p class="brand-word">Your games</p></div><span class="header-status">Review library</span>';
       return;
@@ -263,7 +275,7 @@
   }
 
   function patchNavigation() {
-    const screen = model.screen === 'game' || model.screen === 'review' ? '' : model.screen;
+    const screen = model.screen === 'game' || model.screen === 'review' || model.screen === 'sandbox' ? '' : model.screen;
     nav.querySelectorAll('[data-nav]').forEach((button) => {
       const current = button.dataset.nav === screen;
       if (current) button.setAttribute('aria-current', 'page');
@@ -289,9 +301,10 @@
       '<button class="button button--primary" type="button" data-action="nav-play">' + icon('bot') + ' Play now</button>' +
       '<button class="button button--quiet" type="button" data-action="nav-learn">Open learning</button>' +
       '</div></article>' +
-      roomStatusCard(match) +
+      activeRoomCard(match) +
       '<section class="quick-grid" aria-label="Ways to play">' +
       quickCard('bot', 'Play Stockfish', 'Offline bot, clocks and private skill', 'setup-bot') +
+      quickCard('sandbox', 'Sandbox', 'Free analysis board & custom FEN', 'nav-sandbox') +
       quickCard('bluetooth', 'Nearby game', 'Bluetooth on two Knightline phones', 'transport-menu') +
       quickCard('room', 'Private room', 'Online peer-to-peer room code', 'online-menu') +
       quickCard('learn', 'Learn an opening', 'Guided lines with progressive hints', 'nav-openings') +
@@ -301,10 +314,13 @@
 
   function resumeCard(match) {
     if (match.winner >= 0 || match.lessonComplete) return '<article class="surface surface--flat"><p class="eyebrow">' + (match.lessonComplete?'Lesson complete':'Last game · finished') + '</p><h2 class="surface-title">' + escape(match.opponent || 'Private game') + '</h2><div class="hero-actions"><button class="button button--mint" type="button" data-action="review-open" ' + (!match.canReview ? 'disabled' : '') + '>' + icon('review') + (match.lessonComplete?'Review lesson':'Review last game') + '</button><button class="button button--quiet" type="button" data-action="nav-history">All games</button></div></article>';
-    return '<article class="surface surface--flat"><div class="section-heading"><div><p class="eyebrow">Saved board</p><h2 class="surface-title">' +
+    const isRemote = match.opponent && match.opponent !== 'Stockfish' && match.opponent !== 'Pass & Play';
+    const transportBadge = isRemote ? ' · ' + (model.transport && model.transport.kind === 'bluetooth' ? 'Nearby' : 'Online') : '';
+    return '<article class="surface surface--flat"><div class="section-heading"><div><p class="eyebrow">Saved board' + escape(transportBadge) + '</p><h2 class="surface-title">' +
       escape(match.yourTurn ? 'Your move is waiting' : 'Match in progress') + '</h2><p class="subtitle">' +
       escape(match.opponent || 'Private game') + ' · ' + escape(match.clock && match.clock.preset || 'Untimed') + '</p></div>' +
-      '<button class="button button--mint button--compact" type="button" data-action="resume">Resume</button></div></article>';
+      '<div class="hero-actions"><button class="button button--mint button--compact" type="button" data-action="resume">Resume</button>' +
+      (isRemote ? '<button class="button button--quiet button--compact" type="button" data-action="abandon">Abandon</button>' : '') + '</div></div></article>';
   }
 
   function renderHistory() {
@@ -315,22 +331,48 @@
       (entries.length ? '' : '<article class="empty-state"><div><h2 class="surface-title">Your story starts here.</h2><p class="body-copy">Play a game and its moves will be saved automatically.</p><button class="button button--primary" type="button" data-action="nav-play">Start a game</button></div></article>') + '</div></section>';
   }
 
-  function roomStatusCard(match) {
+  function activeRoomCard(match) {
     const transport = object(model.transport, {});
-    const activelyOpening = transport.kind === 'online' &&
+    if (match) return '';
+    const isHostingOpen = transport.hosting && transport.isOpen;
+    const isReady = !!transport.ready;
+    const isActivelyOpening = transport.kind === 'online' &&
       /opening|waiting|connecting|created|join/i.test(String(transport.status || ''));
-    if (match || (!transport.ready && !activelyOpening)) return '';
-    const roomName = String(transport.peer || '').trim() || 'Private room';
-    if (transport.ready) {
-      const action = transport.hosting ? 'Set up a game' : 'Suggest a game';
-      const detail = transport.hosting
-        ? 'Choose a clock, then invite your connected friend.'
-        : 'Choose a clock and ask your friend to start a private game.';
-      return '<article class="surface room-status"><div class="section-heading"><div><p class="eyebrow">Private room connected</p><h2 class="surface-title">' + escape(roomName) + '</h2><p class="subtitle">' + escape(detail) +
-        '</p></div><button class="button button--mint button--compact" type="button" data-action="remote-setup">' + escape(action) + '</button></div></article>';
+    if (!isHostingOpen && !isReady && !isActivelyOpening) {
+      if (transport.status === 'Room closed.') {
+        return '<article class="surface room-status room-status--closed"><div class="section-heading"><div><p class="eyebrow">Room closed</p><h2 class="surface-title">Room terminated</h2><p class="subtitle">You can host or join another room at any time.</p></div></div></article>';
+      }
+      return '';
     }
-    return '<article class="surface surface--flat room-status"><p class="eyebrow">Private online room</p><h2 class="surface-title">Waiting for your friend</h2><p class="subtitle">' +
-      escape(transport.status || roomName + ' is opening. Keep Knightline open while your friend joins.') + '</p></article>';
+
+    const isOnline = transport.kind === 'online';
+    const roomCode = transport.roomCode || (transport.peerAddress && transport.peerAddress.startsWith('peerjs:') ? transport.peerAddress.substring(7) : '');
+    const statusNote = transport.ready ? 'Friend connected! Ready to play.'
+      : isOnline ? (transport.status || 'Waiting for friend to join. Keep Knightline open.')
+      : (transport.status || 'Discoverable • waiting for friend to connect.');
+
+    return '<article class="surface active-room-card">' +
+      '<div class="active-room-header">' +
+        '<div class="active-room-badge"><span class="active-room-dot"></span><span>' + (transport.ready ? 'Friend Connected' : 'Room is Open') + '</span></div>' +
+        '<span class="eyebrow">' + (isOnline ? 'Online PeerJS' : 'Bluetooth') + '</span>' +
+      '</div>' +
+      (isOnline && roomCode ?
+        '<div class="active-room-code-box">' +
+          '<div class="active-room-code-group">' +
+            '<span class="active-room-code-label">Room Key</span>' +
+            '<strong class="active-room-code-val">' + escape(roomCode) + '</strong>' +
+          '</div>' +
+          '<button class="button button--compact button--mint" type="button" data-copy-key="' + escape(roomCode) + '">' +
+            icon('copy') + '<span>Copy Key</span>' +
+          '</button>' +
+        '</div>' : '') +
+      '<p class="subtitle">' + escape(statusNote) + '</p>' +
+      '<div class="hero-actions">' +
+        (transport.ready ?
+          '<button class="button button--mint button--compact" type="button" data-action="remote-setup">' + (transport.hosting ? 'Set up a game' : 'Suggest a game') + '</button>' : '') +
+        '<button class="button button--danger button--compact" type="button" data-native-action="transport.closeRoom">Close Room</button>' +
+      '</div>' +
+    '</article>';
   }
 
   function quickCard(iconName, title, detail, action) {
@@ -339,19 +381,15 @@
   }
 
   function renderPlay() {
-    const transport = object(model.transport, {});
-    const connectedRoom = transport.ready ? '<article class="surface room-status"><p class="eyebrow">Private room connected</p><h2 class="surface-title">Ready to play together</h2><p class="subtitle">' +
-      escape(transport.hosting ? 'Choose the clock and invite your friend.' : 'Suggest a clock to your connected friend.') +
-      '</p><div class="hero-actions"><button class="button button--mint" type="button" data-action="remote-setup">' +
-      escape(transport.hosting ? 'Set up a game' : 'Suggest a game') + '</button></div></article>' : '';
     main.innerHTML =
       '<section class="screen"><div><p class="eyebrow">Play</p><h1 class="title">Choose your board.</h1><p class="subtitle">Every local game is ready without a sign-in.</p></div>' +
       (model.match ? resumeCard(model.match) : '') +
-      connectedRoom +
+      activeRoomCard(model.match) +
       '<article class="surface"><div class="section-heading"><div><h2 class="surface-title">Play Stockfish</h2><p class="subtitle">Choose a clock and a level. Hints turn it into Practice.</p></div></div>' +
       '<div class="hero-actions"><button class="button button--primary" type="button" data-action="setup-bot">Set up bot game</button></div></article>' +
       '<div class="quick-grid">' +
       quickCard('pass', 'Pass & play', 'Two people, one device', 'setup-pass') +
+      quickCard('sandbox', 'Sandbox', 'Free analysis board & custom FEN', 'nav-sandbox') +
       quickCard('bluetooth', 'Nearby Bluetooth', 'No internet required', 'transport-menu') +
       quickCard('room', 'Private Peer room', 'Invite only, internet for signaling', 'online-menu') +
       quickCard('review', 'Game library', 'Review your saved games', 'nav-history') +
@@ -398,6 +436,92 @@
         '<div class="sheet-footer"><button class="button" type="button" data-sheet-close>Cancel</button><button class="button button--primary" type="button" data-lesson-start>Start as White</button></div>':'<p class="tiny">No unwinnable bot challenge: this material is a dead draw against a lone king. Try the rook or queen lesson to practise a forced mate.</p><button class="button button--wide" type="button" data-sheet-close>Back to lessons</button>');
   }
 
+  function renderSandbox() {
+    const sandbox = object(model.sandbox, {});
+    const position = object(sandbox.position, {});
+    const coach = object(sandbox.coach, {});
+    const evalEnabled = !!sandbox.evalEnabled;
+    const effectiveMe = 0 ^ (model.manualFlip ? 1 : 0);
+    const captured = computeCaptured(array(position.b));
+    const turn = Number(position.turn || 0);
+
+    const markup =
+      '<section class="screen screen--game sandbox-workspace">' +
+        '<div class="game-topline">' +
+          '<div>' +
+            '<p class="game-name">Sandbox · Analysis Board</p>' +
+            '<span class="game-integrity">' + (turn === 0 ? 'White to move' : 'Black to move') + '</span>' +
+          '</div>' +
+          (evalEnabled ?
+            '<button class="eval-chip" type="button" data-sandbox-action="eval" aria-label="Stockfish evaluation ' + escape(coach.evaluation || '—') + '">' +
+              '<span class="eval-label">EVAL</span><span data-evaluation>' + escape(coach.evaluation || '—') + '</span>' +
+              '<span class="eval-state">' + escape(coach.evaluationState || 'Analyzing') + '</span>' +
+            '</button>' :
+            '<button class="button button--compact" type="button" data-sandbox-action="eval">' + icon('engine') + ' Enable Eval</button>') +
+        '</div>' +
+        playerCard(
+          effectiveMe === 0 ? 'Black' : 'White',
+          'Free analysis',
+          effectiveMe === 0 ? 'B' : 'W',
+          '',
+          turn === (1 - effectiveMe),
+          false,
+          'opponent',
+          effectiveMe === 0 ? captured.blackCaptured : captured.whiteCaptured,
+          effectiveMe === 0 ? (captured.diff < 0 ? -captured.diff : 0) : (captured.diff > 0 ? captured.diff : 0),
+          'top'
+        ) +
+        '<div id="board-host" class="board-stage">' +
+          boardLayout(position, effectiveMe, true, coach, evalEnabled) +
+        '</div>' +
+        playerCard(
+          effectiveMe === 0 ? 'White' : 'Black',
+          'Free analysis',
+          effectiveMe === 0 ? 'W' : 'B',
+          '',
+          turn === effectiveMe,
+          false,
+          'you',
+          effectiveMe === 0 ? captured.whiteCaptured : captured.blackCaptured,
+          effectiveMe === 0 ? (captured.diff > 0 ? captured.diff : 0) : (captured.diff < 0 ? -captured.diff : 0),
+          'bottom'
+        ) +
+        '<div class="sandbox-toolbar">' +
+          '<button class="button button--compact" type="button" data-sandbox-action="reset">' + icon('undo') + ' Reset</button>' +
+          '<button class="button button--compact" type="button" data-sandbox-action="clear">' + icon('trash') + ' Clear</button>' +
+          '<button class="button button--compact" type="button" data-sandbox-action="undo" ' + (sandbox.canUndo ? '' : 'disabled') + '>' + icon('undo') + ' Undo</button>' +
+          '<button class="button button--compact" type="button" data-sandbox-action="redo" ' + (sandbox.canRedo ? '' : 'disabled') + '>' + icon('redo') + ' Redo</button>' +
+          '<button class="button button--compact" type="button" data-action="flip-board">' + icon('rotate') + ' Flip</button>' +
+          '<button class="button button--compact" type="button" data-sandbox-action="fen">FEN</button>' +
+        '</div>' +
+      '</section>';
+    paintBoardWorkspace(markup, '.sandbox-workspace');
+  }
+
+  function openSandboxFenSheet() {
+    const fen = model.sandbox && model.sandbox.fen ? model.sandbox.fen : 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1';
+    overlay = {kind: 'sandbox-fen', fen: fen};
+    openSheet('room');
+    sheetScroll.innerHTML =
+      '<div class="sheet-heading"><div>' +
+        '<p class="eyebrow">Position FEN</p>' +
+        '<h2 id="sheet-title" class="sheet-title">Copy or Load FEN</h2>' +
+      '</div><button class="icon-button" type="button" data-sheet-close aria-label="Close">' + icon('close') + '</button></div>' +
+      '<section class="sheet-section">' +
+        '<p class="sheet-label">Current Position FEN</p>' +
+        '<div class="active-room-code-box">' +
+          '<input type="text" class="input" id="sandbox-fen-current" readonly value="' + escape(fen) + '" style="font-size:0.75rem;font-family:monospace;width:100%;">' +
+        '</div>' +
+        '<button class="button button--compact button--mint" type="button" data-copy-key="' + escape(fen) + '">' + icon('copy') + ' Copy Current FEN</button>' +
+      '</section>' +
+      '<section class="sheet-section">' +
+        '<p class="sheet-label">Load Custom FEN</p>' +
+        '<input type="text" class="input" id="sandbox-fen-input" placeholder="Paste 6-field FEN string here..." style="font-size:0.78rem;font-family:monospace;width:100%;margin-bottom:8px;">' +
+        '<button class="button button--primary button--compact" type="button" data-sandbox-load-fen>Load Position</button>' +
+      '</section>' +
+      '<div class="sheet-footer"><button class="button button--quiet" type="button" data-sheet-close>Close</button></div>';
+  }
+
   function renderPuzzle() {
     const p = model.puzzle;
     if (!p || !p.available) { renderLearn(); return; }
@@ -406,10 +530,16 @@
     paintBoardWorkspace(markup, '.puzzle-workspace');
   }
 
-  function boardContext() { return model.screen === 'puzzle' ? model.puzzle : model.screen === 'review' ? model.review : model.match; }
+  function boardContext() {
+    return model.screen === 'puzzle' ? model.puzzle
+      : model.screen === 'review' ? model.review
+      : model.screen === 'sandbox' ? model.sandbox
+      : model.match;
+  }
   function boardPositionKey() {
     const c = boardContext(), p = c?.position;
-    return [model.screen,model.session,c?.token,c?.index,c?.me,p?.seq,array(p?.b).join(',')].join(':');
+    const flip = (model.manualFlip ? 1 : 0) ^ (model.autoFlip ? 1 : 0);
+    return [model.screen,model.session,c?.token,c?.index,c?.me,flip,p?.seq,array(p?.b).join(',')].join(':');
   }
   function paintBoardWorkspace(markup, selector) {
     const existing = main.querySelector(selector), key = boardPositionKey();
@@ -431,6 +561,7 @@
       const rail = existing.querySelector('.eval-rail'), nextRail = fresh.querySelector('.eval-rail');
       if (rail && nextRail) { rail.setAttribute('aria-label', nextRail.getAttribute('aria-label')); rail.innerHTML = nextRail.innerHTML; }
       refreshBoardOnly();
+      attachBoardInteractions();
     } else {
       cancelBoardDrag(); main.innerHTML = markup;
       main.querySelector(selector).dataset.positionKey = key;
@@ -490,31 +621,67 @@
     const coach = object(match.coach, {});
     const winner = Number(match.winner);
     const finished = winner >= 0;
-    const opponentActive = !finished && !match.lessonComplete && Number(clock.active) !== Number(match.me);
-    const youActive = !finished && !match.lessonComplete && Number(clock.active) === Number(match.me);
+    const isPass = !!match.local && !match.solo;
+    const effectiveMe = isPass ?
+      ((model.autoFlip ? Number(match.turn) : 0) ^ (model.manualFlip ? 1 : 0)) :
+      Number(match.me);
     const position = object(match.position, {});
     const evaluationEnabled = !!match.evaluationEnabled;
-    const material = materialBalance(array(position.b));
+    const captured = computeCaptured(array(position.b));
+
+    const bottomIsWhite = effectiveMe === 0;
+    const bottomSide = bottomIsWhite ? 0 : 1;
+    const topSide = 1 - bottomSide;
+    const isYouBottom = isPass ? bottomIsWhite : (Number(match.me) === effectiveMe);
+
+    const bottomName = isYouBottom ? (match.you || 'You') : (match.opponent || 'Opponent');
+    const bottomDetail = isYouBottom ? (match.youDetail || (bottomIsWhite ? 'White' : 'Black')) : (match.opponentDetail || (bottomIsWhite ? 'White' : 'Black'));
+    const bottomInitials = isYouBottom ? (isPass ? (bottomIsWhite ? 'P1' : 'P2') : 'ME') : (isPass ? (bottomIsWhite ? 'P1' : 'P2') : initials(match.opponent || 'OP'));
+    const bottomClock = isYouBottom ? clockForYou(match, clock) : clockForOpponent(match, clock);
+    const bottomRole = isYouBottom ? 'you' : 'opponent';
+    const bottomActive = !finished && !match.lessonComplete && (Number(clock.active) === bottomSide || (isPass && Number(match.turn) === bottomSide));
+    const bottomCaptured = bottomIsWhite ? captured.whiteCaptured : captured.blackCaptured;
+    const bottomLead = bottomIsWhite ? (captured.diff > 0 ? captured.diff : 0) : (captured.diff < 0 ? -captured.diff : 0);
+
+    const topName = isYouBottom ? (match.opponent || 'Opponent') : (match.you || 'You');
+    const topDetail = isYouBottom ? (match.opponentDetail || (!bottomIsWhite ? 'White' : 'Black')) : (match.youDetail || (!bottomIsWhite ? 'White' : 'Black'));
+    const topInitials = isYouBottom ? (isPass ? (!bottomIsWhite ? 'P1' : 'P2') : initials(match.opponent || 'OP')) : (isPass ? (!bottomIsWhite ? 'P1' : 'P2') : 'ME');
+    const topClock = isYouBottom ? clockForOpponent(match, clock) : clockForYou(match, clock);
+    const topRole = isYouBottom ? 'opponent' : 'you';
+    const topActive = !finished && !match.lessonComplete && (Number(clock.active) === topSide || (isPass && Number(match.turn) === topSide));
+    const topBot = isYouBottom ? !!match.solo : false;
+    const topCaptured = bottomIsWhite ? captured.blackCaptured : captured.whiteCaptured;
+    const topLead = bottomIsWhite ? (captured.diff < 0 ? -captured.diff : 0) : (captured.diff > 0 ? captured.diff : 0);
+
     const reconnectBanner = model.transport && model.transport.reconnecting ?
-      '<div class="reconnecting-banner"><span class="status-dot"></span><span>Connection interrupted. Reconnecting (' + (model.transport.reconnectSeconds || 25) + 's)…</span><button class="banner-action-button" type="button" data-native-action="transport.disconnect">Cancel</button></div>' : '';
+      (model.transport.isExtendedResuming ?
+        '<div class="reconnecting-banner reconnecting-banner--waiting"><span class="status-dot"></span><span>Waiting for friend to rejoin…</span><button class="banner-action-button" type="button" data-action="game-back">Leave</button><button class="banner-action-button" type="button" data-action="abandon">Abandon</button></div>' :
+        '<div class="reconnecting-banner"><span class="status-dot"></span><span>Connection interrupted. Reconnecting (' + (model.transport.reconnectSeconds != null ? model.transport.reconnectSeconds : 25) + 's)…</span><button class="banner-action-button" type="button" data-native-action="transport.disconnect">Cancel</button></div>') : '';
     const markup =
       '<section class="screen screen--game play-workspace">' + reconnectBanner + '<div class="game-topline"><div><p class="game-name">' + escape(finished ? gameResult(match) : match.lessonComplete ? 'Lesson complete' : match.yourTurn ? 'Your move' : 'Opponent to move') + '</p><span class="game-integrity">' + escape(match.practice || 'Practice') + '</span></div>' +
       (evaluationEnabled ? '<button class="eval-chip" type="button" data-action="engine-info" aria-label="Stockfish evaluation ' + escape(coach.evaluation || 'not ready') + '. ' + escape(coach.evaluationState || 'Analyzing') + '">' +
       '<span class="eval-label">EVAL</span><span data-evaluation>' + escape(coach.evaluation || '—') + '</span><span class="eval-state">' + escape(coach.evaluationState || 'Analyzing') + '</span></button></div>' +
       '' : '<span class="game-state-pill">' + icon('check') + escape(finished ? 'Complete' : match.yourTurn ? 'Your turn' : 'In play') + '</span></div>') +
-      playerCard(match.opponent || 'Opponent', playerDetail(match.opponentDetail || 'Private match', material, 1 - Number(match.me)), initials(match.opponent || 'OP'), clockForOpponent(match, clock), opponentActive, !!match.solo, 'opponent') +
-      '<div id="board-host" class="board-stage">' + boardLayout(position, Number(match.me), true, coach, evaluationEnabled) + '</div>' +
-      playerCard(match.you || 'You', playerDetail(match.youDetail || 'Your side', material, Number(match.me)), 'ME', clockForYou(match, clock), youActive, false, 'you') +
+      playerCard(topName, topDetail, topInitials, topClock, topActive, topBot, topRole, topCaptured, topLead, 'top') +
+      '<div id="board-host" class="board-stage">' + boardLayout(position, effectiveMe, true, coach, evaluationEnabled) + '</div>' +
+      playerCard(bottomName, bottomDetail, bottomInitials, bottomClock, bottomActive, false, bottomRole, bottomCaptured, bottomLead, 'bottom') +
       coachMarkup(coach, match, finished) +
       gameActions(match, finished) + '</section>';
     paintBoardWorkspace(markup, '.play-workspace');
   }
 
-  function playerCard(name, detail, initialsValue, clock, active, bot, clockRole) {
-    return '<article class="player-card' + (active ? ' player-card--active' : '') + '"><span class="avatar' + (bot ? ' avatar--bot' : '') + '">' +
-      escape(initialsValue) + '</span><div class="player-copy"><p class="player-name">' + escape(name) + '</p><p class="player-meta">' +
-      escape(detail) + '</p></div><span class="clock' + (active ? ' clock--active' : '') + '" data-clock="' + escape(clockRole) + '">' +
-      escape(clock) + '</span></article>';
+  function playerCard(name, detail, initialsValue, clock, active, bot, clockRole, capturedList, lead, cardPosition) {
+    const pieces = array(capturedList);
+    const trayHtml = pieces.length || (lead > 0) ?
+      '<div class="captured-tray">' +
+        pieces.map((p) => '<span class="captured-piece">' + pieceSvg(p) + '</span>').join('') +
+        (lead > 0 ? '<span class="material-badge">+' + lead + '</span>' : '') +
+      '</div>' : '';
+    return '<article class="player-card' + (cardPosition ? ' player-card--' + cardPosition : '') + (active ? ' player-card--active' : '') + '"><span class="avatar' + (bot ? ' avatar--bot' : '') + '">' +
+      escape(initialsValue) + '</span><div class="player-copy"><div class="player-heading"><p class="player-name">' + escape(name) + '</p>' +
+      '</div><div class="player-sub"><span class="player-meta">' + escape(detail) + '</span>' + trayHtml + '</div></div>' +
+      (clock ? '<span class="clock' + (active ? ' clock--active' : '') + '" data-clock="' + escape(clockRole) + '">' +
+      escape(clock) + '</span>' : '') + '</article>';
   }
 
   function coachMarkup(coach, match, finished) {
@@ -529,6 +696,7 @@
   }
 
   function gameActions(match, finished) {
+    const isPass = !!match.local && !match.solo;
     if (match.lessonComplete) return '<div class="game-actions"><button class="button button--primary" type="button" data-action="rematch">Restart</button><button class="button" type="button" data-action="review-open">Review</button><button class="button" type="button" data-action="nav-learn">Lessons</button></div>';
     if (finished) {
       return '<div class="game-actions"><button class="button button--primary" type="button" data-action="rematch">Rematch</button>' +
@@ -540,6 +708,7 @@
     return '<div class="game-actions game-actions--dock">' +
       '<button class="button button--primary" type="button" data-action="coach" ' + (!coachState.available || coachState.loading ? 'disabled' : '') + '>' + icon('hint') + '<span>' + escape(coachAction === 'Preparing' ? 'Hint' : coachAction) + '</span></button>' +
       '<button class="button" type="button" data-action="takeback" ' + (takeback ? '' : 'disabled') + '>' + icon('undo') + '<span>Take back</span></button>' +
+      (isPass ? '<button class="button" type="button" data-action="flip-board">' + icon('rotate') + '<span>Flip</span></button>' : '') +
       '<button class="button" type="button" data-action="moves">' + icon('moves') + 'Moves</button><button class="button" type="button" data-action="game-menu">' + icon('more') + 'More</button></div>';
   }
 
@@ -553,11 +722,15 @@
     const existing = main.querySelector('.review-workspace');
     const title = review.variation ? 'Your analysis' : reviewMovePrefix(array(review.timeline).find(m=>m.index===review.index) || {index:review.index,side:review.toMove}) + ' ' + (review.notation || 'Move');
     const copy = review.variation ? (review.variationLine || 'Play any legal continuation.') : liveGame ? 'Explore both sides. This analysis does not change your saved game.' : review.reason || 'Stockfish is grading the saved game. You can explore the board now.';
+    const reviewOrientation = Number(review.me || 0) ^ (model.manualFlip ? 1 : 0);
+    const revCaptured = computeCaptured(array(review.position?.b));
+    const matBadge = revCaptured.diff !== 0 ?
+      '<span class="material-badge">' + (revCaptured.diff > 0 ? '+W' + revCaptured.diff : '+B' + (-revCaptured.diff)) + '</span>' : '';
     const markup =
-      '<section class="screen screen--review review-workspace" data-position-key="' + escape(key) + '"><div class="review-position-line"><div><span class="coach-kicker">' + escape(review.variation ? (review.toMove===0?'White':'Black') + ' to move' : review.player) + '</span><strong>' + escape(title) + '</strong></div><span class="review-verdict review-verdict--' + category.key + '">' + escape(review.variation ? 'Exploring' : scored ? category.label : 'Not graded yet') + '</span></div>' +
-      '<div id="board-host" class="board-stage">' + boardLayout(object(review.position, {}), Number(review.me || 0), !!review.yourTurn, {evaluation:review.evaluation}, true) + '</div>' +
+      '<section class="screen screen--review review-workspace" data-position-key="' + escape(key) + '"><div class="review-position-line"><div><span class="coach-kicker">' + escape(review.variation ? (review.toMove===0?'White':'Black') + ' to move' : review.player) + '</span><strong>' + escape(title) + '</strong>' + matBadge + '</div><span class="review-verdict review-verdict--' + category.key + '">' + escape(review.variation ? 'Exploring' : scored ? category.label : 'Not graded yet') + '</span></div>' +
+      '<div id="board-host" class="board-stage">' + boardLayout(object(review.position, {}), reviewOrientation, !!review.yourTurn, {evaluation:review.evaluation}, true) + '</div>' +
       reviewTimeline(review) +
-      '<div class="review-tools"><button class="button button--compact" type="button" data-action="review-best" aria-pressed="' + !!review.showBest + '" ' + (!review.canShowBest?'disabled':'') + '>' + (review.showBest?'Hide best':'Show best') + '</button><button class="button button--compact" type="button" data-action="review-undo" ' + (!review.variationLength?'disabled':'') + '>' + icon('undo') + 'Undo</button></div>' +
+      '<div class="review-tools"><button class="button button--compact" type="button" data-action="review-best" aria-pressed="' + !!review.showBest + '" ' + (!review.canShowBest?'disabled':'') + '>' + (review.showBest?'Hide best':'Show best') + '</button><button class="button button--compact" type="button" data-action="review-undo" ' + (!review.variationLength?'disabled':'') + '>' + icon('undo') + 'Undo</button><button class="button button--compact" type="button" data-action="flip-board">' + icon('rotate') + 'Flip</button></div>' +
       '<article class="review-insight review-insight--' + category.key + '"><button class="insight-reading" type="button" data-action="review-details"><div class="insight-heading"><span class="coach-kicker">' + (review.variation?'Independent line':'Position notes') + '</span><span class="detail-link">Details ›</span></div><p class="coach-copy">' + escape(copy) + '</p></button>' +
       '<button class="review-score-line review-live-score" type="button" data-action="review-evaluate" aria-label="Reevaluate. Positive favors White"><span><span data-review-score-label>' + escape(review.evaluationLabel || 'After played move') + '</span> <strong data-review-evaluation>' + escape(review.evaluation || '…') + '</strong></span><span data-review-evaluation-state>' + escape(review.evaluationState || 'Analyzing…') + '</span></button>' +
       '<div class="review-coach-actions"><button class="button button--compact" type="button" data-action="' + (review.variation?'review-reset':'review-explore') + '">' + (review.variation?'Reset line':'Play from here') + '</button><button class="button button--primary button--compact" type="button" data-action="review-key" ' + (nextKeyTarget()?'':'disabled') + '>' + (nextKeyTarget()?'Next key move →':'No more key moves') + '</button></div></article>' +
@@ -702,6 +875,57 @@
     return '<div class="eval-rail" data-top-side="' + (whiteAtTop?'white':'black') + '" role="img" aria-label="Evaluation ' + text.replace(/[^0-9+.−M#-]/g,'') + '; White at ' + (whiteAtTop?'top':'bottom') + '"><svg viewBox="0 0 10 100" preserveAspectRatio="none" aria-hidden="true"><rect class="eval-rail-fill" x="0" y="' + top + '" width="10" height="' + white.toFixed(1) + '"></rect></svg></div>';
   }
 
+  function computeCaptured(board) {
+    const initial = { 1: 8, 2: 2, 3: 2, 4: 2, 5: 1 };
+    const values = [0, 1, 3, 3, 5, 9, 0];
+    const currentWhite = { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0 };
+    const currentBlack = { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0 };
+    let whiteMaterial = 0;
+    let blackMaterial = 0;
+
+    (board || []).forEach((piece) => {
+      const p = Number(piece) || 0;
+      if (p > 0 && p < 6) {
+        currentWhite[p] = (currentWhite[p] || 0) + 1;
+        whiteMaterial += values[p];
+      } else if (p < 0 && p > -6) {
+        currentBlack[-p] = (currentBlack[-p] || 0) + 1;
+        blackMaterial += values[-p];
+      }
+    });
+
+    let whitePromoted = 0;
+    [5, 4, 3, 2].forEach((k) => {
+      if (currentWhite[k] > initial[k]) whitePromoted += currentWhite[k] - initial[k];
+    });
+    let blackPromoted = 0;
+    [5, 4, 3, 2].forEach((k) => {
+      if (currentBlack[k] > initial[k]) blackPromoted += currentBlack[k] - initial[k];
+    });
+
+    const capturedWhite = [];
+    [5, 4, 3, 2].forEach((k) => {
+      const missing = Math.max(0, initial[k] - currentWhite[k]);
+      for (let i = 0; i < missing; i++) capturedWhite.push(k);
+    });
+    const missingWhitePawns = Math.max(0, initial[1] - currentWhite[1] - whitePromoted);
+    for (let i = 0; i < missingWhitePawns; i++) capturedWhite.push(1);
+
+    const capturedBlack = [];
+    [5, 4, 3, 2].forEach((k) => {
+      const missing = Math.max(0, initial[k] - currentBlack[k]);
+      for (let i = 0; i < missing; i++) capturedBlack.push(-k);
+    });
+    const missingBlackPawns = Math.max(0, initial[1] - currentBlack[1] - blackPromoted);
+    for (let i = 0; i < missingBlackPawns; i++) capturedBlack.push(-1);
+
+    return {
+      whiteCaptured: capturedBlack,
+      blackCaptured: capturedWhite,
+      diff: whiteMaterial - blackMaterial,
+    };
+  }
+
   function materialBalance(board) {
     const values = [0, 1, 3, 3, 5, 9, 0];
     let balance = 0;
@@ -789,8 +1013,9 @@
   }
 
   function attachBoardInteractions() {
-    const board = main.querySelector('[data-board-interactive="true"]');
-    if (!board) return;
+    const board = main.querySelector('.board');
+    if (!board || board.dataset.interactionsAttached === 'true') return;
+    board.dataset.interactionsAttached = 'true';
     board.querySelectorAll('[data-square]').forEach((button) => {
       button.addEventListener('click', (event) => {
         // A touch drag normally emits a trailing click.  Do not turn a
@@ -897,7 +1122,7 @@
     const position = object(boardContext().position, {});
     const valid = array(position.moves).some((move) => Number(move[0]) === from && Number(move[1]) === to);
     if (!valid) return false;
-    if (['review','puzzle'].includes(model.screen) && Math.abs(Number(position.b[from])) === 1 && (to < 8 || to >= 56)) {
+    if (['review','puzzle','sandbox'].includes(model.screen) && Math.abs(Number(position.b[from])) === 1 && (to < 8 || to >= 56)) {
       selectedSquare = null;
       overlay = {kind:'analysis-promotion',from,to,screen:model.screen,token:boardContext().token,positionSeq:position.seq,index:boardContext().index}; openSheet('promotion');
       sheetScroll.innerHTML = '<div class="sheet-heading"><h2 id="sheet-title" class="sheet-title">Choose your promotion</h2><button class="icon-button" type="button" data-sheet-close aria-label="Cancel">' + icon('close') + '</button></div><div class="choice-grid choice-grid--two">' + [[5,'Queen'],[4,'Rook'],[3,'Bishop'],[2,'Knight']].map(([piece,name])=>'<button class="choice" type="button" data-analysis-promotion="'+piece+'">'+name+'</button>').join('') + '</div>';
@@ -907,6 +1132,7 @@
     movePending = true;
     if (model.screen === 'puzzle') puzzleCommand('move', {from, to});
     else if (model.screen === 'review') reviewCommand('try', {from, to});
+    else if (model.screen === 'sandbox') send('sandbox.move', {from: from, to: to});
     else send('match.move', {from: from, to: to});
     refreshBoardOnly();
     return true;
@@ -970,7 +1196,7 @@
   }
 
   function openSetup(mode) {
-    overlay = {kind: 'setup', mode: mode, clock: 0, level: 1};
+    overlay = {kind: 'setup', mode: mode, clock: 0, level: 1, autoFlip: false};
     openSheet('setup');
     sheetScroll.innerHTML = setupMarkup();
   }
@@ -988,6 +1214,11 @@
       (bot ? '<section class="sheet-section"><p class="sheet-label">Opponent</p><div class="choice-grid" data-choice-group="level">' +
         strengthNames.map((name, index) => choiceButton('level', index, name, index === 0 ? 'Estimated 600' : index === 1 ? 'Estimated 1200' : 'Estimated 1800', overlay.level === index)).join('') +
         '</div></section>' : '') +
+      (!bot && !remote ?
+        '<section class="sheet-section">' +
+        '<button class="setting-toggle" type="button" role="switch" aria-checked="' + (!!overlay.autoFlip) + '" data-toggle-autoflip>' +
+        '<span><strong>Auto-flip board on turn</strong><small>Rotate the board 180° for Black\'s turn (default is stationary)</small></span>' +
+        '<span class="switch-track" aria-hidden="true"><i></i></span></button></section>' : '') +
       '</div><div class="sheet-footer"><button class="button button--quiet" type="button" data-sheet-close>Cancel</button><button class="button button--primary" type="button" data-setup-start>' +
       primaryLabel + '</button></div>';
   }
@@ -1277,6 +1508,8 @@
       const value = action.dataset.action;
       if (value === 'nav-home') go('home');
       else if (value === 'nav-play') go('play');
+      else if (value === 'nav-sandbox') go('sandbox');
+      else if (value === 'flip-board') { model.manualFlip = !model.manualFlip; render(); }
       else if (value === 'nav-learn') go('learn');
       else if (value === 'nav-openings') { learnSection = 'openings'; go('learn'); }
       else if (value === 'nav-profile') go('profile');
@@ -1289,6 +1522,7 @@
       else if (value === 'online-menu') openOnlineMenu();
       else if (value === 'remote-setup') openSetup('remote');
       else if (value === 'resume') { showReviewOverview = !!model.match && model.match.winner >= 0; send('match.resume'); }
+      else if (value === 'abandon') send('match.abandon');
       else if (value === 'coach') send('coach.advance');
       else if (value === 'coach-details') openReading(model.match.coach.heading || 'Position coach', model.match.coach.copy+(model.match.endgame?'\n\n'+model.match.endgame.method:''));
       else if (value === 'takeback') send('match.takeback');
@@ -1330,7 +1564,11 @@
     if (analysisPromotion && overlay?.kind === 'analysis-promotion') {
       const {from,to,screen,token,positionSeq,index} = overlay;
       closeOverlay(); movePending = true;
-      send(screen === 'review' ? 'review.try' : 'puzzle.move', {from,to,promotion:Number(analysisPromotion.dataset.analysisPromotion),index,token,positionSeq},screen === 'review');
+      if (screen === 'sandbox') {
+        send('sandbox.move', {from, to, promotion: Number(analysisPromotion.dataset.analysisPromotion)});
+      } else {
+        send(screen === 'review' ? 'review.try' : 'puzzle.move', {from,to,promotion:Number(analysisPromotion.dataset.analysisPromotion),index,token,positionSeq},screen === 'review');
+      }
       refreshBoardOnly(); return;
     }
     const filter = event.target.closest('[data-review-filter]');
@@ -1372,8 +1610,18 @@
       updateSetupChoice(choice.dataset.choice, choice.dataset.value);
       return;
     }
+    const toggleAutoflip = event.target.closest('[data-toggle-autoflip]');
+    if (toggleAutoflip && overlay && overlay.kind === 'setup') {
+      overlay.autoFlip = !overlay.autoFlip;
+      toggleAutoflip.setAttribute('aria-checked', String(overlay.autoFlip));
+      return;
+    }
     if (event.target.closest('[data-setup-start]')) {
       const payload = {clock: overlay.clock, level: overlay.level};
+      if (overlay.mode === 'pass') {
+        model.autoFlip = !!overlay.autoFlip;
+        model.manualFlip = false;
+      }
       const type = overlay.mode === 'bot' ? 'match.startBot'
         : overlay.mode === 'remote' ? (object(model.transport, {}).hosting ? 'match.inviteRemote' : 'match.suggestRemote')
           : 'match.startPass';
@@ -1442,6 +1690,14 @@
     const nativeAction = event.target.closest('[data-native-action]');
     if (nativeAction) {
       const type = nativeAction.dataset.nativeAction;
+      if (type === 'transport.closeRoom') {
+        if (model.transport) {
+          model.transport.hosting = false;
+          model.transport.isOpen = false;
+          model.transport.status = 'Room closed.';
+        }
+        render();
+      }
       if (['match.resign','match.clear','engine.info','chat.open'].includes(type)) overlayAction(type);
       else { closeOverlay(); send(type); }
       return;
@@ -1465,6 +1721,45 @@
       const input = document.getElementById('chat-text');
       const text = input ? input.value : '';
       send('chat.send', {text: text});
+      return;
+    }
+    const copyKeyBtn = event.target.closest('[data-copy-key]');
+    if (copyKeyBtn) {
+      const key = copyKeyBtn.dataset.copyKey;
+      if (key) {
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(key).catch(() => {});
+        }
+        const span = copyKeyBtn.querySelector('span');
+        if (span) {
+          const original = span.textContent;
+          span.textContent = 'Copied!';
+          setTimeout(() => { span.textContent = original; }, 1800);
+        }
+        toast('Copied: ' + key);
+      }
+      return;
+    }
+    const sbAction = event.target.closest('[data-sandbox-action]');
+    if (sbAction) {
+      const act = sbAction.dataset.sandboxAction;
+      if (act === 'reset') send('sandbox.reset');
+      else if (act === 'clear') send('sandbox.clear');
+      else if (act === 'undo') send('sandbox.undo');
+      else if (act === 'redo') send('sandbox.redo');
+      else if (act === 'eval') send('sandbox.toggleEval');
+      else if (act === 'fen') openSandboxFenSheet();
+      return;
+    }
+    if (event.target.closest('[data-sandbox-load-fen]')) {
+      const fenInput = document.getElementById('sandbox-fen-input');
+      const fen = fenInput ? fenInput.value.trim() : '';
+      if (fen) {
+        closeOverlay();
+        send('sandbox.loadFen', {fen: fen});
+      } else {
+        toast('Please enter a valid FEN string.');
+      }
       return;
     }
     if (event.target.closest('[data-sheet-close]')) {

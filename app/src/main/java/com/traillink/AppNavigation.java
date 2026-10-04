@@ -14,6 +14,7 @@ final class AppNavigation {
         if (screen.equals("review")) return reviewParent;
         if (screen.equals("game")) return gameParent;
         if (screen.equals("puzzle")) return "learn";
+        if (screen.equals("sandbox")) return "play";
         return screen.equals("home") ? "exit" : "home";
     }
     private static boolean isTab(String screen) {

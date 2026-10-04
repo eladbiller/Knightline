@@ -86,7 +86,7 @@ async function connectToDevice(serial, port) {
   const pid = adb(serial, 'shell', 'pidof', 'com.eladbiller.knightline');
   adb(serial, 'forward', `tcp:${port}`, `localabstract:webview_devtools_remote_${pid}`);
   const targets = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json();
-  const page = targets.find(t => t.type === 'page');
+  const page = targets.find(t => t.type === 'page' && t.url.includes('ui/index.html')) || targets.find(t => t.type === 'page');
   const cdp = new CDP(serial);
   await cdp.open(page.webSocketDebuggerUrl);
   return cdp;
@@ -103,28 +103,59 @@ async function run() {
   await delay(1000);
   console.log("Starting PeerJS Online Room test...");
   
-  // Navigate to Online menu on both
-  await hostCdp.clickSelector('[data-action="nav-play"]');
-  await clientCdp.clickSelector('[data-action="nav-play"]');
+  const navigateToPlay = async (cdp) => {
+    for (let i = 0; i < 10; i++) {
+      const screen = await cdp.evaluate("document.getElementById('app')?.dataset.screen");
+      if (screen === 'play') return;
+      await cdp.clickSelector('[data-action="nav-play"]');
+      await delay(1000);
+    }
+  };
+
+  const ensureOnlineMenu = async (cdp) => {
+    const isOpen = await cdp.evaluate("document.getElementById('sheet')?.dataset.open === 'true'");
+    if (!isOpen) {
+      await cdp.clickSelector('[data-action="online-menu"]');
+      await delay(1200);
+    }
+  };
+
+  const acceptConfirm = async (cdp) => {
+    const hasConfirm = await cdp.evaluate(`!!document.querySelector('[data-confirm="accept"]')`);
+    if (hasConfirm) {
+      console.log(`[${cdp.serial}] Accepting replace saved game confirmation...`);
+      await cdp.clickSelector('[data-confirm="accept"]');
+      await delay(2000);
+    }
+  };
+
+  // Navigate to Play screen on both
+  await navigateToPlay(hostCdp);
+  await navigateToPlay(clientCdp);
   await delay(1000);
   
-  await hostCdp.clickSelector('[data-action="online-menu"]');
-  await clientCdp.clickSelector('[data-action="online-menu"]');
+  // Open online menu on host
+  await ensureOnlineMenu(hostCdp);
   await delay(1000);
   
   const roomCode = "PJS" + Math.random().toString(36).substring(2, 7).toUpperCase();
   console.log(`Using online room code: ${roomCode}`);
-  
+
   // Host creates room
   await hostCdp.typeInput('#room-code', roomCode);
   await hostCdp.clickSelector('[data-online="host"]');
-  await delay(2500);
+  await delay(1500);
+  await acceptConfirm(hostCdp);
+  await delay(2000);
 
-  // Client switches to join tab and joins room
+  // Client opens online menu, switches to join tab and joins room
+  await ensureOnlineMenu(clientCdp);
   await clientCdp.clickSelector('[data-online-tab="join"]');
   await delay(600);
   await clientCdp.typeInput('#room-code', roomCode);
   await clientCdp.clickSelector('[data-online="join"]');
+  await delay(1500);
+  await acceptConfirm(clientCdp);
   
   console.log("Waiting for WebRTC connection...");
   // Wait for the remote-setup button to appear on host (indicates connected)

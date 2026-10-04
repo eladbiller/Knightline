@@ -104,55 +104,112 @@ public final class KnightlineActivity extends ChessLinkActivity {
     private int pendingLessonSide=-1, pendingEndgame=-1, endgameLesson=-1;
     private boolean pendingEndgamePattern;
     private boolean endgamePattern;
+    private Game sandboxGame;
+    private final ArrayList<Game> sandboxHistory = new ArrayList<>();
+    private final ArrayList<Game> sandboxRedo = new ArrayList<>();
+    private boolean sandboxEvalEnabled = true;
+    private StockfishEngine.Coach sandboxCoach;
+    private volatile long sandboxSearchGen = 0;
     private boolean isReconnecting = false;
     private long reconnectDeadline = 0;
     private final Runnable reconnectCountdownRunnable = new Runnable() {
         @Override public void run() {
-            if (!isReconnecting || ready) return;
-            postEvent("transport", transportPayload());
-            handler.postDelayed(this, 1000);
+            try {
+                android.util.Log.i("TIMEOUT_DEBUG", "reconnectCountdown: isReconnecting=" + isReconnecting + " ready=" + ready + " remaining=" + (reconnectDeadline - android.os.SystemClock.elapsedRealtime()));
+                if (!isReconnecting || ready) return;
+                if (reconnectDeadline > 0 && android.os.SystemClock.elapsedRealtime() >= reconnectDeadline) {
+                    android.util.Log.i("TIMEOUT_DEBUG", "reconnectCountdown: DEADLINE EXPIRED! Running reconnectTimeoutRunnable");
+                    reconnectTimeoutRunnable.run();
+                    return;
+                }
+                postEvent("transport", transportPayload());
+            } catch (Throwable t) {
+                android.util.Log.e("TIMEOUT_DEBUG", "reconnectCountdown error", t);
+            } finally {
+                if (isReconnecting && !ready) {
+                    handler.postDelayed(this, 1000);
+                }
+            }
+        }
+    };
+    private final Runnable linkHealthRunnable = new Runnable() {
+        @Override public void run() {
+            if (!destroyed) {
+                if (link != null && !(link instanceof PeerLink)) {
+                    boolean disabled = adapter != null && !adapter.isEnabled();
+                    if (disabled && (ready || (link != null && link.connected))) {
+                        android.util.Log.i("TIMEOUT_DEBUG", "linkHealth: BT disabled! Closing link and calling lost()");
+                        if (link != null) link.close();
+                        lost();
+                    }
+                }
+                handler.postDelayed(this, 1000);
+            }
         }
     };
     private final Runnable reconnectRetryRunnable = new Runnable() {
         @Override public void run() {
-            if (!isReconnecting || ready || link == null) return;
-            long remaining = reconnectDeadline - android.os.SystemClock.elapsedRealtime();
-            if (remaining <= 0) return;
-            if (link instanceof PeerLink && !peerAddress.isEmpty() && peerAddress.startsWith("peerjs:")) {
-                String room = peerAddress.substring("peerjs:".length());
-                if (!host) {
-                    ((PeerLink) link).joinRoom(room, "Friend");
+            try {
+                android.util.Log.i("TIMEOUT_DEBUG", "reconnectRetry: isReconnecting=" + isReconnecting + " ready=" + ready);
+                if (!isReconnecting || ready || link == null) return;
+                if (reconnectDeadline > 0) {
+                    long remaining = reconnectDeadline - android.os.SystemClock.elapsedRealtime();
+                    if (remaining <= 0) return;
+                } else if (!"game".equals(requestedScreen)) {
+                    return;
                 }
-            } else if (link != null && !(link instanceof PeerLink)) {
-                if (host) {
-                    if (link.server == null && !link.connected) {
-                        link.host();
+                if (link instanceof PeerLink && !peerAddress.isEmpty() && peerAddress.startsWith("peerjs:")) {
+                    String room = peerAddress.substring("peerjs:".length());
+                    if (!host) {
+                        ((PeerLink) link).joinRoom(room, "Friend");
+                    } else if (!link.connected) {
+                        ((PeerLink) link).hostRoom(room);
                     }
-                } else if (!link.connected && link.socket == null && !peerAddress.isEmpty() && adapter != null && android.bluetooth.BluetoothAdapter.checkBluetoothAddress(peerAddress)) {
-                    try {
-                        BluetoothDevice dev = adapter.getRemoteDevice(peerAddress);
-                        if (dev != null) {
-                            link.join(dev);
+                } else if (link != null && !(link instanceof PeerLink)) {
+                    if (adapter != null && adapter.isEnabled()) {
+                        if (host) {
+                            if (link.server == null && !link.connected) {
+                                link.host();
+                            }
+                        } else if (!link.connected && link.socket == null && !peerAddress.isEmpty() && android.bluetooth.BluetoothAdapter.checkBluetoothAddress(peerAddress)) {
+                            try {
+                                BluetoothDevice dev = adapter.getRemoteDevice(peerAddress);
+                                if (dev != null) {
+                                    link.join(dev);
+                                }
+                            } catch (Exception ignored) { }
                         }
-                    } catch (Exception ignored) { }
+                    }
+                }
+            } catch (Throwable t) {
+                android.util.Log.e("TIMEOUT_DEBUG", "reconnectRetry error", t);
+            } finally {
+                if (isReconnecting && !ready) {
+                    handler.postDelayed(this, 5000);
                 }
             }
-            handler.postDelayed(this, 5000);
         }
     };
     private final Runnable reconnectTimeoutRunnable = () -> {
-        if (isReconnecting) {
-            isReconnecting = false;
-            reconnectDeadline = 0;
-            handler.removeCallbacks(reconnectRetryRunnable);
-            handler.removeCallbacks(reconnectCountdownRunnable);
-            super.lost();
-            KnightlineMatchService.stop(KnightlineActivity.this);
-            updateScreenAwakeState();
-            notice("Connection timeout • match saved.", false);
-            publishState();
-            postEvent("transport", transportPayload());
-        }
+        runOnUiThread(() -> {
+            android.util.Log.i("TIMEOUT_DEBUG", "reconnectTimeoutRunnable CALLED: isReconnecting=" + isReconnecting);
+            if (isReconnecting) {
+                isReconnecting = false;
+                reconnectDeadline = 0;
+                handler.removeCallbacks(reconnectRetryRunnable);
+                handler.removeCallbacks(reconnectCountdownRunnable);
+                inGame = false;
+                ready = false;
+                super.lost();
+                KnightlineMatchService.stop(KnightlineActivity.this);
+                updateScreenAwakeState();
+                save();
+                home();
+                notice("Match paused and saved. You can resume anytime from Home.", false);
+                postEvent("transport", transportPayload());
+                android.util.Log.i("TIMEOUT_DEBUG", "reconnectTimeoutRunnable COMPLETED! requestedScreen=" + requestedScreen);
+            }
+        });
     };
 
     @Override public void onCreate(Bundle bundle) {
@@ -177,6 +234,7 @@ public final class KnightlineActivity extends ChessLinkActivity {
         // Prepare the shared NNUE once; review uses a separate process so a long
         // post-game report cannot block interactive exploration.
         worker.execute(() -> { try { getStockfish(); } catch (Exception ignored) { } });
+        handler.postDelayed(linkHealthRunnable, 1000);
         createLocalWebView();
     }
 
@@ -380,6 +438,7 @@ public final class KnightlineActivity extends ChessLinkActivity {
     @Override int protocolVersion() { return KNIGHTLINE_PROTOCOL; }
 
     @Override void home() {
+        android.util.Log.i("TIMEOUT_DEBUG", "home() called! Setting requestedScreen to home");
         leaveReview();
         reviewing = false;
         inGame = false;
@@ -390,6 +449,9 @@ public final class KnightlineActivity extends ChessLinkActivity {
     }
 
     @Override void renderGame() {
+        if (!local && !host && state != null) {
+            selectedClock = state.optInt("clockPreset", selectedClock);
+        }
         // A delayed match/engine callback may refresh data, but must not eject
         // the player from an independent puzzle into the saved game.
         if (!"game".equals(requestedScreen)) { publishState(); return; }
@@ -444,6 +506,7 @@ public final class KnightlineActivity extends ChessLinkActivity {
     }
 
     @Override public void connected(String name, String address) {
+        awaiting = false;
         if (isReconnecting) {
             isReconnecting = false;
             reconnectDeadline = 0;
@@ -459,40 +522,41 @@ public final class KnightlineActivity extends ChessLinkActivity {
     }
 
     @Override public void lost() {
-        if (isReconnecting) {
-            return;
-        }
-        boolean activeMatch = !local && ("game".equals(requestedScreen) || "review".equals(requestedScreen))
-                && state != null && state.optInt("winner", -1) < 0;
-        if (activeMatch) {
-            ready = false;
-            isReconnecting = true;
-            reconnectDeadline = android.os.SystemClock.elapsedRealtime() + 25000;
-            status = "Connection interrupted • reconnecting…";
-            handler.removeCallbacks(reconnectTimeoutRunnable);
-            handler.removeCallbacks(reconnectRetryRunnable);
-            handler.removeCallbacks(reconnectCountdownRunnable);
-            handler.postDelayed(reconnectTimeoutRunnable, 25000);
-            updateForegroundService();
-            updateScreenAwakeState();
-            runOnUiThread(() -> {
+        runOnUiThread(() -> {
+            awaiting = false;
+            android.util.Log.i("TIMEOUT_DEBUG", "lost() called: isReconnecting=" + isReconnecting + " requestedScreen=" + requestedScreen + " ready=" + ready + " state=" + (state != null));
+            if (isReconnecting) {
+                return;
+            }
+            boolean activeMatch = !local && ("game".equals(requestedScreen) || "review".equals(requestedScreen))
+                    && state != null && state.optInt("winner", -1) < 0;
+            android.util.Log.i("TIMEOUT_DEBUG", "lost() activeMatch=" + activeMatch);
+            if (activeMatch) {
+                ready = false;
+                isReconnecting = true;
+                reconnectDeadline = android.os.SystemClock.elapsedRealtime() + 25000;
+                status = "Connection interrupted • reconnecting…";
+                handler.removeCallbacks(reconnectTimeoutRunnable);
+                handler.removeCallbacks(reconnectRetryRunnable);
+                handler.removeCallbacks(reconnectCountdownRunnable);
+                handler.postDelayed(reconnectTimeoutRunnable, 25000);
+                updateForegroundService();
+                updateScreenAwakeState();
                 notice("Connection interrupted. Reconnecting (25s)…", false);
                 publishState();
                 postEvent("transport", transportPayload());
-            });
-            handler.postDelayed(reconnectRetryRunnable, 4000);
-            reconnectCountdownRunnable.run();
-            return;
-        }
-        isReconnecting = false;
-        reconnectDeadline = 0;
-        handler.removeCallbacks(reconnectTimeoutRunnable);
-        handler.removeCallbacks(reconnectRetryRunnable);
-        handler.removeCallbacks(reconnectCountdownRunnable);
-        super.lost();
-        KnightlineMatchService.stop(this);
-        updateScreenAwakeState();
-        runOnUiThread(() -> {
+                handler.postDelayed(reconnectRetryRunnable, 4000);
+                reconnectCountdownRunnable.run();
+                return;
+            }
+            isReconnecting = false;
+            reconnectDeadline = 0;
+            handler.removeCallbacks(reconnectTimeoutRunnable);
+            handler.removeCallbacks(reconnectRetryRunnable);
+            handler.removeCallbacks(reconnectCountdownRunnable);
+            super.lost();
+            KnightlineMatchService.stop(this);
+            updateScreenAwakeState();
             publishState();
             postEvent("transport", transportPayload());
         });
@@ -723,6 +787,12 @@ public final class KnightlineActivity extends ChessLinkActivity {
             }
             return;
         }
+        if (message != null && "sync".equals(message.optString("type"))) {
+            if (host && game != null && session.equals(message.optString("session"))) {
+                showSnapshot();
+            }
+            return;
+        }
         if (message != null && "hello".equals(message.optString("type"))) {
             if (message.optInt("version") != protocolVersion()) {
                 link.close(); ready = false;
@@ -735,6 +805,7 @@ public final class KnightlineActivity extends ChessLinkActivity {
                 return;
             }
             ready = true;
+            awaiting = false;
             status = "Connected to " + (peer.isEmpty() ? "Friend" : peer);
             if (isReconnecting) {
                 isReconnecting = false;
@@ -743,6 +814,9 @@ public final class KnightlineActivity extends ChessLinkActivity {
                 handler.removeCallbacks(reconnectRetryRunnable);
                 handler.removeCallbacks(reconnectCountdownRunnable);
                 notice("Reconnected successfully!", false);
+            }
+            if (!host && !session.isEmpty()) {
+                send(obj("type", "sync", "session", session));
             }
             if (host && game != null) {
                 showSnapshot();
@@ -762,6 +836,10 @@ public final class KnightlineActivity extends ChessLinkActivity {
         String previousSession = session;
         super.message(message);
         if (message != null && "state".equals(message.optString("type"))) {
+            awaiting = false;
+            if (!local && !host) {
+                selectedClock = message.optInt("clockPreset", selectedClock);
+            }
             if (isReconnecting) {
                 isReconnecting = false;
                 reconnectDeadline = 0;
@@ -792,6 +870,7 @@ public final class KnightlineActivity extends ChessLinkActivity {
         handler.removeCallbacks(reconnectTimeoutRunnable);
         handler.removeCallbacks(reconnectRetryRunnable);
         handler.removeCallbacks(reconnectCountdownRunnable);
+        handler.removeCallbacks(linkHealthRunnable);
         KnightlineMatchService.stop(this);
         updateScreenAwakeState();
         archiveAnalysisGeneration++;
@@ -872,7 +951,16 @@ public final class KnightlineActivity extends ChessLinkActivity {
                 navigation.enterGame(requestedScreen, learnMode || endgameLesson >= 0);
                 leaveReview();
                 if (state != null && (state.optInt("winner", -1) >= 0 || lessonComplete())) { reviewIndex = 1; review(); return; }
-                requestedScreen = "game"; if (local || host) showSnapshot(); else renderGame(); return;
+                requestedScreen = "game";
+                if (local) {
+                    showSnapshot();
+                } else {
+                    resumeMultiplayerMatch();
+                }
+                return;
+            case "match.abandon":
+                requestClearSaved();
+                return;
             case "learn.start": beginLesson(payload); return;
             case "learn.endgame": beginEndgame(payload); return;
             case "puzzle.start": puzzleCollection = payload.optString("collection", "all"); startPuzzle(payload.optInt("index", -1)); return;
@@ -959,6 +1047,16 @@ public final class KnightlineActivity extends ChessLinkActivity {
                 }
                 home();
                 return;
+            case "transport.closeRoom": closeActiveRoom(); return;
+            case "nav.sandbox": openSandbox(); return;
+            case "sandbox.move": moveSandbox(payload); return;
+            case "sandbox.reset": resetSandbox(); return;
+            case "sandbox.clear": clearSandbox(); return;
+            case "sandbox.undo": undoSandbox(); return;
+            case "sandbox.redo": redoSandbox(); return;
+            case "sandbox.eval":
+            case "sandbox.toggleEval": toggleSandboxEval(); return;
+            case "sandbox.loadFen": loadSandboxFen(payload); return;
             case "transport.settings": openBluetoothSettings(); return;
             case "online.host": beginOnlineRoom(true, payload); return;
             case "online.join": beginOnlineRoom(false, payload); return;
@@ -1221,13 +1319,81 @@ public final class KnightlineActivity extends ChessLinkActivity {
         publishState();
     }
 
+    @Override void invite(int id) {
+        if (!ready) return;
+        if (pendingGame != -1) {
+            toast("Waiting for your friend's response.");
+            return;
+        }
+        pendingGame = id;
+        send(obj("type", host ? "offer" : "suggest", "game", id, "clock", selectedClock));
+        toast((host ? "Invitation" : "Suggestion") + " sent for " + Game.NAMES[id]);
+        if (inGame) renderGame();
+    }
+
+    private void resumeMultiplayerMatch() {
+        if (local || state == null || session.isEmpty()) {
+            if (host) showSnapshot(); else renderGame();
+            return;
+        }
+        awaiting = false;
+        isReconnecting = true;
+        reconnectDeadline = 0; // Extended resuming, no 25s auto-kill
+        updateForegroundService();
+        updateScreenAwakeState();
+        handler.removeCallbacks(reconnectTimeoutRunnable);
+        handler.removeCallbacks(reconnectRetryRunnable);
+        handler.removeCallbacks(reconnectCountdownRunnable);
+
+        boolean isPeer = (peerAddress != null && peerAddress.startsWith("peerjs:"))
+                || (!savedPeer.isEmpty() && savedPeer.startsWith("peerjs:"));
+        if (isPeer) {
+            String room = (peerAddress != null && peerAddress.startsWith("peerjs:") ? peerAddress : savedPeer).substring("peerjs:".length());
+            useOnline();
+            if (host) {
+                status = "Waiting for friend to rejoin online room " + room + "…";
+                ((PeerLink) link).hostRoom(room);
+            } else {
+                status = "Reconnecting to online room " + room + "…";
+                ((PeerLink) link).joinRoom(room, "Friend");
+            }
+        } else {
+            useBluetooth();
+            if (host) {
+                status = "Waiting for friend to reconnect nearby…";
+                if (link.server == null && !link.connected) {
+                    link.host();
+                }
+            } else {
+                status = "Reconnecting to nearby friend…";
+                String target = !peerAddress.isEmpty() ? peerAddress : savedPeer;
+                if (adapter != null && android.bluetooth.BluetoothAdapter.checkBluetoothAddress(target)) {
+                    try {
+                        BluetoothDevice dev = adapter.getRemoteDevice(target);
+                        if (dev != null && link.socket == null && !link.connected) {
+                            link.join(dev);
+                        }
+                    } catch (Exception ignored) { }
+                }
+            }
+        }
+        if (host) showSnapshot(); else renderGame();
+        postEvent("transport", transportPayload());
+        publishState();
+        handler.postDelayed(reconnectRetryRunnable, 5000);
+    }
+
     /** Keep invitations inside the single HTML UI rather than opening a native dialog. */
     private void handleRemoteInvitation(JSONObject message) {
         final String type = message.optString("type", "");
         final int gameId = message.optInt("game", -1);
+        final int remoteClock = message.optInt("clock", -1);
         runOnUiThread(() -> {
             boolean validDirection = ("offer".equals(type) && !host) || ("suggest".equals(type) && host);
             if (!ready || !validDirection || gameId != 0) return;
+            if (remoteClock >= 0 && remoteClock <= 4) {
+                setClockPreset(remoteClock);
+            }
             if (pendingGame >= 0 || incomingRemoteGame >= 0 || pendingConfirmation != null) {
                 send(obj("type", "decline"));
                 return;
@@ -1242,7 +1408,7 @@ public final class KnightlineActivity extends ChessLinkActivity {
                 } else if (host) {
                     startGame(acceptedGame);
                 } else {
-                    send(obj("type", "accept", "game", acceptedGame));
+                    send(obj("type", "accept", "game", acceptedGame, "clock", selectedClock));
                     notice("Game accepted. Your friend is setting up the board.", false);
                 }
             };
@@ -1481,6 +1647,7 @@ public final class KnightlineActivity extends ChessLinkActivity {
             root.put("match", matchPayload());
             root.put("review", reviewPayload());
             root.put("puzzle", puzzlePayload());
+            root.put("sandbox", sandboxPayload());
         } catch (Exception ignored) { }
         return root;
     }
@@ -1492,7 +1659,7 @@ public final class KnightlineActivity extends ChessLinkActivity {
 
     private JSONObject matchPayload() {
         if (state == null || state.optInt("id", -1) != 0) return obj("available", false);
-        boolean yourTurn = state.optInt("winner", -1) < 0 && state.optInt("turn", -1) == me && !lessonComplete();
+        boolean yourTurn = state.optInt("winner", -1) < 0 && (state.optInt("turn", -1) == me || (local && !solo)) && !lessonComplete();
         boolean guided = isGuidedLesson();
         boolean normal = isNormalBotGame();
         JSONObject display = state;
@@ -1784,14 +1951,206 @@ public final class KnightlineActivity extends ChessLinkActivity {
     private JSONObject transportPayload() {
         JSONArray devices = new JSONArray();
         for (int index = 0; index < foundDevices.size(); index++) {
-            BluetoothDevice device = foundDevices.get(index);
-            devices.put(obj("index", index, "name", device.getName() == null ? "Nearby phone" : device.getName(),
-                    "paired", device.getBondState() == BluetoothDevice.BOND_BONDED));
+            try {
+                BluetoothDevice device = foundDevices.get(index);
+                if (device != null) {
+                    devices.put(obj("index", index, "name", device.getName() == null ? "Nearby phone" : device.getName(),
+                            "paired", device.getBondState() == BluetoothDevice.BOND_BONDED));
+                }
+            } catch (Exception ignored) { }
         }
-        return obj("ready", ready, "hosting", host, "status", status, "peer", peer,
-                "kind", savedPeer.startsWith("peerjs:") ? "online" : "bluetooth", "devices", devices,
+        boolean isOnline = (peerAddress != null && peerAddress.startsWith("peerjs:"))
+                || (!savedPeer.isEmpty() && savedPeer.startsWith("peerjs:"));
+        String roomCode = "";
+        if (isOnline) {
+            String p = (peerAddress != null && peerAddress.startsWith("peerjs:")) ? peerAddress : savedPeer;
+            if (p.startsWith("peerjs:")) {
+                roomCode = p.substring("peerjs:".length());
+            }
+        }
+        boolean isOpen = host && !local && link != null;
+        if (link instanceof PeerLink) {
+            isOpen = isOpen && !((PeerLink) link).isClosed() && !roomCode.isEmpty();
+        } else if (link != null && !(link instanceof PeerLink)) {
+            isOpen = isOpen && (link.server != null || (!ready && host));
+        }
+        return obj("ready", ready, "hosting", host, "status", status == null ? "" : status, "peer", peer == null ? "" : peer,
+                "kind", isOnline ? "online" : "bluetooth", "devices", devices,
+                "roomCode", roomCode, "isOpen", isOpen,
                 "reconnecting", isReconnecting,
-                "reconnectSeconds", isReconnecting ? Math.max(0, Math.round((reconnectDeadline - android.os.SystemClock.elapsedRealtime()) / 1000f)) : 0);
+                "reconnectSeconds", isReconnecting && reconnectDeadline > 0 ? Math.max(0, Math.round((reconnectDeadline - android.os.SystemClock.elapsedRealtime()) / 1000f)) : 0,
+                "isExtendedResuming", isReconnecting && reconnectDeadline == 0);
+    }
+
+    private void closeActiveRoom() {
+        if (isReconnecting) {
+            isReconnecting = false;
+            reconnectDeadline = 0;
+            handler.removeCallbacks(reconnectTimeoutRunnable);
+            handler.removeCallbacks(reconnectRetryRunnable);
+            handler.removeCallbacks(reconnectCountdownRunnable);
+        }
+        if (link != null) link.close();
+        ready = false;
+        host = false;
+        awaiting = false;
+        status = "Room closed.";
+        peer = "";
+        savedPeer = "";
+        peerAddress = "";
+        KnightlineMatchService.stop(this);
+        updateScreenAwakeState();
+        notice("Room closed.", false);
+        publishState();
+        postEvent("transport", transportPayload());
+    }
+
+    private void openSandbox() {
+        leaveReview();
+        requestedScreen = "sandbox";
+        inGame = false;
+        gameScreen = false;
+        if (sandboxGame == null) {
+            sandboxGame = new Game(0, 0);
+            sandboxHistory.clear();
+            sandboxRedo.clear();
+        }
+        evaluateSandbox();
+        publishState();
+    }
+
+    private void moveSandbox(JSONObject payload) {
+        if (sandboxGame == null) sandboxGame = new Game(0, 0);
+        int from = payload.optInt("from", -1);
+        int to = payload.optInt("to", -1);
+        int promo = payload.optInt("promo", 5);
+        if (from >= 0 && to >= 0) {
+            sandboxHistory.add(sandboxGame.copy());
+            sandboxRedo.clear();
+            sandboxGame.move(sandboxGame.turn, from, to, promo);
+            evaluateSandbox();
+            publishState();
+        }
+    }
+
+    private void resetSandbox() {
+        sandboxGame = new Game(0, 0);
+        sandboxHistory.clear();
+        sandboxRedo.clear();
+        sandboxCoach = null;
+        evaluateSandbox();
+        publishState();
+    }
+
+    private void clearSandbox() {
+        if (sandboxGame == null) sandboxGame = new Game(0, 0);
+        sandboxHistory.add(sandboxGame.copy());
+        sandboxRedo.clear();
+        java.util.Arrays.fill(sandboxGame.b, 0);
+        sandboxGame.b[60] = 6;
+        sandboxGame.b[4] = -6;
+        sandboxCoach = null;
+        evaluateSandbox();
+        publishState();
+    }
+
+    private void undoSandbox() {
+        if (!sandboxHistory.isEmpty()) {
+            sandboxRedo.add(sandboxGame.copy());
+            sandboxGame = sandboxHistory.remove(sandboxHistory.size() - 1);
+            evaluateSandbox();
+            publishState();
+        }
+    }
+
+    private void redoSandbox() {
+        if (!sandboxRedo.isEmpty()) {
+            sandboxHistory.add(sandboxGame.copy());
+            sandboxGame = sandboxRedo.remove(sandboxRedo.size() - 1);
+            evaluateSandbox();
+            publishState();
+        }
+    }
+
+    private void toggleSandboxEval() {
+        sandboxEvalEnabled = !sandboxEvalEnabled;
+        if (sandboxEvalEnabled) evaluateSandbox();
+        publishState();
+    }
+
+    private void loadSandboxFen(JSONObject payload) {
+        String fen = payload.optString("fen", "").trim();
+        try {
+            Game g = ChessPosition.fromFen(fen);
+            if (sandboxGame != null) sandboxHistory.add(sandboxGame.copy());
+            sandboxRedo.clear();
+            sandboxGame = g;
+            notice("FEN loaded successfully.", false);
+            evaluateSandbox();
+        } catch (Exception e) {
+            notice("Invalid FEN: " + e.getMessage(), true);
+        }
+        publishState();
+    }
+
+    private void evaluateSandbox() {
+        if (!sandboxEvalEnabled || sandboxGame == null) return;
+        final long gen = ++sandboxSearchGen;
+        final Game pos = sandboxGame.copy();
+        worker.execute(() -> {
+            try {
+                StockfishEngine sf = getStockfish();
+                if (sf == null) return;
+                StockfishEngine.Coach coach = sf.coach(pos, pos.turn);
+                if (gen != sandboxSearchGen) return;
+                handler.post(() -> {
+                    if (gen != sandboxSearchGen || !"sandbox".equals(requestedScreen)) return;
+                    sandboxCoach = coach;
+                    publishState();
+                });
+            } catch (Exception ignored) {}
+        });
+    }
+
+    private JSONObject sandboxPayload() {
+        if (!"sandbox".equals(requestedScreen)) return obj("available", false);
+        if (sandboxGame == null) sandboxGame = new Game(0, 0);
+        JSONArray moves = new JSONArray();
+        for (int[] m : sandboxGame.legal()) moves.put(array(m));
+        JSONObject position = obj(
+                "b", array(sandboxGame.b),
+                "moves", moves,
+                "turn", sandboxGame.turn,
+                "winner", sandboxGame.winner,
+                "seq", sandboxHistory.size(),
+                "lastA", sandboxGame.lastA,
+                "lastZ", sandboxGame.lastZ
+        );
+        if (sandboxCoach != null && sandboxEvalEnabled) {
+            if (sandboxCoach.move != null && sandboxCoach.move.length >= 2) {
+                try {
+                    position.put("bestFrom", sandboxCoach.move[0]);
+                    position.put("bestTo", sandboxCoach.move[1]);
+                } catch (Exception ignored) {}
+            }
+        }
+        JSONObject coachObj = new JSONObject();
+        try {
+            coachObj.put("evaluation", sandboxCoach != null ? formatEvaluation(sandboxCoach) : "—");
+            coachObj.put("evaluationState", sandboxCoach != null ? "Live" : "Analyzing");
+            coachObj.put("explanation", sandboxCoach != null ? sandboxCoach.explanation : "");
+        } catch (Exception ignored) {}
+        return obj(
+                "available", true,
+                "position", position,
+                "turn", sandboxGame.turn,
+                "canUndo", !sandboxHistory.isEmpty(),
+                "canRedo", !sandboxRedo.isEmpty(),
+                "evalEnabled", sandboxEvalEnabled,
+                "fen", StockfishEngine.fen(sandboxGame),
+                "coach", coachObj,
+                "yourTurn", true
+        );
     }
 
     private JSONArray moveHistory() {

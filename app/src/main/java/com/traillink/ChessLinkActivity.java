@@ -37,7 +37,7 @@ public class ChessLinkActivity extends MainActivity {
     private static final String[] CLOCK_LABELS = {"10 | 0", "5 | 0", "3 | 2", "1 | 0", "Untimed"};
     private final long[] clocks = new long[2];
     private final TextView[] clockViews = new TextView[2];
-    private int selectedClock = 0, clockTurn = -1, clockSeq = -1;
+    int selectedClock = 0, clockTurn = -1, clockSeq = -1;
     private long clockAnchor;
     private boolean clocksRunning;
     private final Runnable clockLoop = new Runnable() { @Override public void run() { tickClocks(); } };

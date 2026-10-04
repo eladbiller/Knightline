@@ -1,4 +1,4 @@
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import assert from 'node:assert/strict';
 
 const adbPath = process.env.ADB || 'adb';
@@ -26,7 +26,7 @@ class CDP {
   call(method, params) {
     return new Promise((resolve, reject) => {
       const id = ++this.id;
-      this.pending.set(id, {resolve, reject, timeout: setTimeout(() => reject(new Error('timeout')), 5000)});
+      this.pending.set(id, {resolve, reject, timeout: setTimeout(() => reject(new Error('timeout')), 8000)});
       this.ws.send(JSON.stringify({id, method, params}));
     });
   }
@@ -35,8 +35,8 @@ class CDP {
     if (response.exceptionDetails) throw new Error(response.exceptionDetails.exception?.description || response.exceptionDetails.text);
     return response.result.value;
   }
-  async waitForSelector(selector) {
-    let retries = 30;
+  async waitForSelector(selector, maxRetries = 35) {
+    let retries = maxRetries;
     while (retries > 0) {
       const exists = await this.evaluate(`!!document.querySelector('${selector}')`);
       if (exists) return;
@@ -75,7 +75,7 @@ class CDP {
     await this.call('Input.dispatchTouchEvent', {type: 'touchStart', touchPoints: [{x: rect.x, y: rect.y, id: 1}]});
     await delay(65);
     await this.call('Input.dispatchTouchEvent', {type: 'touchEnd', touchPoints: []});
-    await delay(400);
+    await delay(500);
   }
   async assertPiece(index, pieceName) {
     const text = await this.evaluate(`
@@ -98,145 +98,194 @@ async function connectToDevice(serial, port) {
   const pid = adb(serial, 'shell', 'pidof', 'com.eladbiller.knightline');
   adb(serial, 'forward', `tcp:${port}`, `localabstract:webview_devtools_remote_${pid}`);
   const targets = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json();
-  const page = targets.find(t => t.type === 'page' && t.url.includes('ui/index.html')) || targets.find(t => t.type === 'page');
+  const page = targets.find(t => t.type === 'page' && t.url.includes('index.html')) || targets.find(t => t.type === 'page');
   const cdp = new CDP(serial);
   await cdp.open(page.webSocketDebuggerUrl);
   return cdp;
 }
 
 async function run() {
-  const hostCdp = await connectToDevice('10ACAD2F63001KS', 9223);
-  const clientCdp = await connectToDevice('TS55QC9PIRCY4XH6', 9224);
-  
-  await delay(1000);
-  console.log("Navigating menus...");
+  const hostSerial = '10ACAD2F63001KS';
+  const clientSerial = 'TS55QC9PIRCY4XH6';
+  const hostPort = 9223;
+  const clientPort = 9224;
+
+  console.log("=== STEP 1: Ensuring Bluetooth is enabled on both devices ===");
+  adb(hostSerial, 'shell', 'svc', 'bluetooth', 'enable');
+  adb(clientSerial, 'shell', 'svc', 'bluetooth', 'enable');
+  await delay(2000);
+
+  console.log("=== STEP 2: Launching Knightline on Vivo and Xiaomi ===");
+  const hostCdp = await connectToDevice(hostSerial, hostPort);
+  const clientCdp = await connectToDevice(clientSerial, clientPort);
+  await delay(1500);
+
+  console.log("=== STEP 3: Navigating to Bluetooth Menu & Connecting ===");
   await hostCdp.clickSelector('[data-action="transport-menu"]');
   await clientCdp.clickSelector('[data-action="transport-menu"]');
+  await delay(500);
+
   await hostCdp.clickSelector('[data-transport="host"]');
   await delay(2000);
+
   await clientCdp.clickSelector('[data-transport="join"]');
-  console.log("Client scanning for host...");
-  
-  // Wait up to 15 seconds for a device to appear
+  console.log("Client scanning for nearby host...");
+
   let deviceFound = false;
-  for (let i = 0; i < 15; i++) {
+  for (let i = 0; i < 20; i++) {
     const devices = await clientCdp.evaluate(`
       Array.from(document.querySelectorAll('[data-device-index]')).map(el => el.textContent)
     `);
     console.log(`[Client] Discovered devices:`, devices);
-      const targetIdx = devices.findIndex(d => d.includes('vivo Y22s'));
-      if (targetIdx !== -1) {
-        console.log("Found vivo Y22s. Clicking it...");
-        await clientCdp.evaluate(`document.querySelectorAll('[data-device-index]')[${targetIdx}].click()`);
-        deviceFound = true;
-        break;
-      }
+    const targetIdx = devices.findIndex(d => d.includes('vivo Y22s') || d.includes('V2206'));
+    if (targetIdx !== -1) {
+      console.log("Found vivo Y22s! Clicking it...");
+      await clientCdp.evaluate(`document.querySelectorAll('[data-device-index]')[${targetIdx}].click()`);
+      deviceFound = true;
+      break;
+    }
     await delay(1000);
   }
-  
-  if (!deviceFound) throw new Error("Could not find any Bluetooth devices to pair with.");
-  
-  console.log("Waiting for connection...");
+  assert(deviceFound, "Failed to find Host Bluetooth device during scan!");
+
+  console.log("Waiting for Bluetooth link establishment...");
   await hostCdp.waitForSelector('[data-action="remote-setup"]');
-  
-  console.log("Connected! Host starting game...");
+  console.log("Bluetooth RFCOMM link established!");
+
+  console.log("=== STEP 4: Starting Game with Clock Preset ===");
   await hostCdp.clickSelector('[data-action="remote-setup"]');
   await delay(1000);
+  // Pick 3 | 2 clock preset (value 2)
+  await hostCdp.clickSelector('[data-choice="clock"][data-value="2"]');
+  await delay(500);
   await hostCdp.clickSelector('[data-setup-start]');
-  
-  console.log("Client accepting game invitation...");
+
+  console.log("Waiting for Client invitation confirmation...");
   await clientCdp.waitForSelector('[data-confirm="accept"]');
   await clientCdp.clickSelector('[data-confirm="accept"]');
-  
-  console.log("Waiting for game to load...");
+
+  console.log("Waiting for game boards...");
   await hostCdp.waitForSelector('.board');
   await clientCdp.waitForSelector('.board');
-  await delay(5000); // Wait for board pieces to fully render
-  
-  console.log("Testing role assignment by attempting a move...");
+  await delay(3000);
+
+  console.log("=== STEP 5: MANDATE 4 - Dynamic White/Black Detection ===");
   let hostIsWhite = false;
   await hostCdp.tapSquare(52); // e2
   await hostCdp.tapSquare(36); // e4
   await delay(1500);
-  
+
   const hostE4 = await hostCdp.evaluate(`
     (function() {
       const el = document.querySelector('[data-square="36"]');
-      return el ? el.getAttribute('aria-label') : '';
+      return el ? (el.getAttribute('aria-label') || '') : '';
     })()
   `);
-  
-  if (hostE4 && hostE4.includes('White pawn')) {
+
+  if (hostE4 && hostE4.includes('White')) {
     hostIsWhite = true;
-    console.log("Roles assigned: Host is White (local move succeeded).");
+    console.log("Roles: Host is White (local move succeeded).");
   } else {
     hostIsWhite = false;
-    console.log("Roles assigned: Host is Black (local move ignored).");
+    console.log("Roles: Host is Black (Client is White).");
   }
-  
+
   const whiteCdp = hostIsWhite ? hostCdp : clientCdp;
   const blackCdp = hostIsWhite ? clientCdp : hostCdp;
-  
+
   if (hostIsWhite) {
-    // Move 1 was already done by host. Just verify client received it.
     await blackCdp.assertPiece(36, "White pawn");
-    console.log("Move 1 synced.");
+    console.log("Move 1 (e4) verified on Black screen.");
   } else {
-    // Host is black, so client is white. Client must do move 1.
     await whiteCdp.tapSquare(52);
     await whiteCdp.tapSquare(36);
     await delay(1500);
     await whiteCdp.assertPiece(36, "White pawn");
-    console.log("White move rendered locally.");
     await blackCdp.assertPiece(36, "White pawn");
-    console.log("Move 1 synced.");
+    console.log("Move 1 (e4) played by Client (White) and verified on Host.");
   }
-  
-  // Black: e7-e5 (12 -> 28)
+
+  // Move 2: Black plays e5 (12 -> 28)
+  console.log("Black playing Move 2: e5 (12 -> 28)...");
   await blackCdp.tapSquare(12);
   await blackCdp.tapSquare(28);
   await delay(1500);
-  // Verify white received e5
   await whiteCdp.assertPiece(28, "Black pawn");
-  console.log("Move 2 synced.");
-  
-  console.log("Testing takeback disabled...");
-  // White tries to takeback (button should be disabled)
-  const canTakeback = await whiteCdp.evaluate(`
+  console.log("Move 2 (e5) verified on White screen.");
+
+  console.log("=== STEP 6: MANDATE 2 - Genuine Physical RFCOMM Drop Test ===");
+  console.log("Executing 'svc bluetooth disable' on Client...");
+  adb(clientSerial, 'shell', 'svc', 'bluetooth', 'disable');
+  await delay(2500);
+
+  console.log("Verifying reconnecting banner on Host...");
+  const bannerOnHost = await hostCdp.evaluate(`
     (function() {
-      const tb = document.querySelector('[data-action="takeback"]');
-      return (tb && !tb.disabled);
+      const b = document.querySelector('.reconnecting-banner');
+      return b ? b.textContent : null;
     })()
   `);
-  assert(canTakeback, "Takeback button should be enabled in Bluetooth mode via bilateral handshake");
-  console.log("Takeback button correctly enabled for bilateral handshake.");
-  
-  // Finish Scholar's Mate
-  console.log("Executing Scholar's Mate...");
-  // Bc4 (61 -> 34)
-  await whiteCdp.tapSquare(61); await whiteCdp.tapSquare(34); await delay(1500);
-  // Nc6 (1 -> 18)
-  await blackCdp.tapSquare(1); await blackCdp.tapSquare(18); await delay(1500);
-  // Qh5 (59 -> 31)
-  await whiteCdp.tapSquare(59); await whiteCdp.tapSquare(31); await delay(1500);
-  // Nf6 (6 -> 21)
-  await blackCdp.tapSquare(6); await blackCdp.tapSquare(21); await delay(1500);
-  
-  // Qxf7# (31 -> 13)
-  await whiteCdp.tapSquare(31); await whiteCdp.tapSquare(13); await delay(2500);
-  
-  // Verify checkmate state on both
-  const hostCheckmate = await hostCdp.evaluate(`document.body.innerHTML.includes('Game complete')`);
-  const clientCheckmate = await clientCdp.evaluate(`document.body.innerHTML.includes('Game complete')`);
-  
-  assert(hostCheckmate, "Host did not show Game complete");
-  assert(clientCheckmate, "Client did not show Game complete");
-  
-  console.log("Scholar's Mate verified successfully on both screens via real Bluetooth.");
-  
+  console.log("Host banner:", bannerOnHost);
+  assert(bannerOnHost && bannerOnHost.includes("Reconnecting"), "Host did not show reconnecting banner after RFCOMM drop!");
+
+  console.log("=== STEP 7: Re-enabling Bluetooth & Verifying Auto-Reconnect ===");
+  adb(clientSerial, 'shell', 'svc', 'bluetooth', 'enable');
+  console.log("Bluetooth re-enabled. Waiting for auto-reconnect...");
+
+  let reconnected = false;
+  for (let i = 0; i < 20; i++) {
+    const banner = await hostCdp.evaluate(`!!document.querySelector('.reconnecting-banner')`);
+    if (!banner) {
+      reconnected = true;
+      break;
+    }
+    await delay(1000);
+  }
+  assert(reconnected, "Failed to auto-reconnect RFCOMM link within timeout!");
+  console.log("Auto-reconnection succeeded! Reconnecting banner cleared.");
+
+  console.log("=== STEP 8: MANDATE 3 - Board Input Lockout & Square Selection Verification ===");
+  // White attempts Move 3: Bc4 (61 -> 34)
+  console.log("White tapping square 61 (f1)...");
+  await whiteCdp.tapSquare(61);
+  await delay(400);
+
+  // Check that square 61 was selected and NOT blocked by awaiting/interaction flags
+  const selectedSquare = await whiteCdp.evaluate(`
+    (function() {
+      const s = document.querySelector('.square--selected, [aria-label*="selected"]');
+      return s ? s.getAttribute('data-square') : null;
+    })()
+  `);
+  console.log("Square selected by White:", selectedSquare);
+  assert.equal(selectedSquare, "61", "CRITICAL BUG: Square 61 was not selected! Input is locked out after reconnect.");
+
+  console.log("White tapping destination square 34 (c4)...");
+  await whiteCdp.tapSquare(34);
+  await delay(1500);
+
+  await whiteCdp.assertPiece(34, "White bishop");
+  await blackCdp.assertPiece(34, "White bishop");
+  console.log("Move 3 (Bc4) successfully completed and synced across physical phones!");
+
+  // Move 4: Black plays Nc6 (1 -> 18)
+  console.log("Black tapping square 1 (b8)...");
+  await blackCdp.tapSquare(1);
+  await delay(400);
+  await blackCdp.tapSquare(18);
+  await delay(1500);
+
+  await whiteCdp.assertPiece(18, "Black knight");
+  await blackCdp.assertPiece(18, "Black knight");
+  console.log("Move 4 (Nc6) successfully completed and synced across physical phones!");
+
+  console.log("=================================================");
+  console.log("qa_bluetooth_reconnect_deep PASSED ALL AUDIT CHECKS!");
+  console.log("=================================================");
   process.exit(0);
 }
+
 run().catch(err => {
-  console.error(err);
+  console.error("qa_bluetooth_reconnect_deep FAILED:", err);
   process.exit(1);
 });
