@@ -503,15 +503,17 @@
               '<span class="turn-dot turn-dot--' + (turn === 0 ? 'white' : 'black') + '"></span>' +
               '<span>' + (turn === 0 ? 'White' : 'Black') + '</span>' +
             '</button>' +
-            '<button class="best-move-chip' + (evalEnabled ? ' best-move-chip--active' : '') + '" type="button" data-sandbox-action="eval" aria-label="Best Move Predictor. Tap to toggle.">' +
-              icon('engine') +
-              '<span>' + bestMoveText + '</span>' +
-            '</button>' +
-            '<button class="best-move-chip' + (sandbox.coachEnabled ? ' best-move-chip--active' : '') + '" type="button" data-sandbox-action="toggle-coach" aria-label="Live Coach. Tap to toggle.">' +
-              icon('hint') +
-              '<span>' + (sandbox.coachEnabled ? 'Coach: ON' : 'Coach: OFF') + '</span>' +
-            '</button>' +
           '</div>' +
+        '</div>' +
+        '<div class="sandbox-engine-controls">' +
+          '<button class="best-move-chip' + (evalEnabled ? ' best-move-chip--active' : '') + '" type="button" data-sandbox-action="eval" aria-label="Best Move Predictor. Tap to toggle.">' +
+            icon('engine') +
+            '<span>' + bestMoveText + '</span>' +
+          '</button>' +
+          '<button class="best-move-chip' + (sandbox.coachEnabled ? ' best-move-chip--active' : '') + '" type="button" data-sandbox-action="toggle-coach" aria-label="Live Coach. Tap to toggle.">' +
+            icon('hint') +
+            '<span>' + (sandbox.coachEnabled ? 'Coach: ON' : 'Coach: OFF') + '</span>' +
+          '</button>' +
         '</div>' +
         '<div id="board-host" class="board-stage">' +
           boardLayout(position, effectiveMe, true, coach, evalEnabled) +

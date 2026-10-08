@@ -10,6 +10,10 @@ trigger: always_on
 - **Deep Problem Solving**: Think deeply about the root cause of issues before applying fixes. Use multiple perspectives and rigorous verification.
 - **Persistence**: If you encounter errors during a task (e.g., when running tests or builds), attempt to fix them yourself and proceed, instead of immediately stopping to ask the user for help.
 
+## Strict Hardware & UI Verification
+- **Multi-Device Testing Requirement**: E2E test scripts must NEVER test on just one device. They must loop sequentially over all target physical devices (e.g., both the Vivo `10ACAD2F63001KS` and Xiaomi `TS55QC9PIRCY4XH6`) to ensure changes work across different form factors and hardware. 
+- **Adversarial UI/CSS Checks**: Whenever making layout changes, explicitly check for mobile overflow, clipping, and screen boundary limits. Do not use negative margins blindly. Flex containers must wrap correctly. Ensure UI elements do not shift or resize the core game board during dynamic visibility toggles.
+
 ## No Status Polling
 - **Never poll background tasks**: After launching a command with `run_command`, do NOT call `manage_task → status` in a loop to check if it finished. The system automatically notifies you when a task completes. Polling wastes massive amounts of tokens for zero benefit.
 - **Use timers if you must wait**: If you need a safety net for a long-running task, use the `schedule` tool with a `TimerCondition` set to the task ID. Never manually poll.
