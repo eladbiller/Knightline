@@ -32,7 +32,8 @@ public final class BridgeGuard {
             "transport.disconnect", "transport.settings", "transport.closeRoom",
             "online.host", "online.join", "chat.open", "chat.send", "engine.info",
             "nav.sandbox", "sandbox.move", "sandbox.reset", "sandbox.clear",
-            "sandbox.undo", "sandbox.redo", "sandbox.eval", "sandbox.toggleEval", "sandbox.loadFen"
+            "sandbox.undo", "sandbox.redo", "sandbox.eval", "sandbox.toggleEval", "sandbox.loadFen",
+            "sandbox.setPiece", "sandbox.setTurn", "sandbox.toggleTurn"
     )));
 
     private long lastSequence = -1;

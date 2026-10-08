@@ -309,40 +309,55 @@ async function run() {
   await cdp.assertPiece(36, "White pawn");
   console.log("Redo moved pawn back to e4.");
 
-  // Test Eval Toggle
-  console.log("Testing Stockfish Eval toggle cycle (ON -> OFF -> ON)...");
-  await cdp.waitForSelector('.eval-chip', 8000);
-  const beforeEval = await cdp.evaluate(`({
-    hasEvalBtn: !!document.querySelector('[data-sandbox-action="eval"]'),
-    evalBtnText: document.querySelector('[data-sandbox-action="eval"]')?.textContent,
-    evalChip: !!document.querySelector('.eval-chip')
+  // Test Predictor Default: MUST be OFF by default
+  console.log("Testing Best Move Predictor default state (strictly OFF)...");
+  await cdp.waitForSelector('.best-move-chip', 8000);
+  const initialPredictor = await cdp.evaluate(`({
+    text: document.querySelector('.best-move-chip')?.textContent.trim(),
+    isActive: document.querySelector('.best-move-chip')?.classList.contains('best-move-chip--active')
   })`);
-  console.log("Initial eval state (enabled by default):", beforeEval);
-  assert(beforeEval.evalChip, "Stockfish eval chip must be visible by default");
+  console.log("Initial Best Move predictor state:", initialPredictor);
+  assert(initialPredictor.text.includes('Best Move: OFF'), `Predictor must default to OFF, got: "${initialPredictor.text}"`);
+  assert(!initialPredictor.isActive, "Predictor must NOT have active class by default");
 
-  // Toggle OFF
-  console.log("Toggling eval OFF...");
+  // Test toggling predictor ON
+  console.log("Toggling Best Move predictor ON...");
   await cdp.clickSelector('[data-sandbox-action="eval"]');
   await delay(1200);
-  const afterEvalOff = await cdp.evaluate(`({
-    hasEvalBtn: !!document.querySelector('[data-sandbox-action="eval"]'),
-    evalBtnText: document.querySelector('[data-sandbox-action="eval"]')?.textContent,
-    evalChip: !!document.querySelector('.eval-chip')
+  const predictorOn = await cdp.evaluate(`({
+    text: document.querySelector('.best-move-chip')?.textContent.trim(),
+    isActive: document.querySelector('.best-move-chip')?.classList.contains('best-move-chip--active')
   })`);
-  console.log("Eval state after toggling OFF:", afterEvalOff);
-  assert(!afterEvalOff.evalChip, "Stockfish eval chip must be hidden when toggled off");
-  assert(afterEvalOff.evalBtnText.includes("Enable Eval"), "Button should show 'Enable Eval' when off");
+  console.log("Predictor state after toggling ON:", predictorOn);
+  assert(predictorOn.isActive, "Predictor must have active class when enabled");
+  assert(!predictorOn.text.includes('Best Move: OFF'), "Predictor text should show evaluation when ON");
 
-  // Toggle BACK ON
-  console.log("Toggling eval back ON...");
+  // Test toggling predictor back OFF
+  console.log("Toggling Best Move predictor OFF...");
   await cdp.clickSelector('[data-sandbox-action="eval"]');
-  await cdp.waitForSelector('.eval-chip', 8000);
-  const evalRestored = await cdp.evaluate(`({
-    evalChip: !!document.querySelector('.eval-chip'),
-    chipText: document.querySelector('.eval-chip')?.textContent
+  await delay(800);
+  const predictorOffAgain = await cdp.evaluate(`({
+    text: document.querySelector('.best-move-chip')?.textContent.trim(),
+    isActive: document.querySelector('.best-move-chip')?.classList.contains('best-move-chip--active')
   })`);
-  console.log("Eval state after toggling ON:", evalRestored);
-  assert(evalRestored.evalChip, "Stockfish eval chip must be restored when toggled back on");
+  console.log("Predictor state after toggling back OFF:", predictorOffAgain);
+  assert(predictorOffAgain.text.includes('Best Move: OFF'), "Predictor must return to OFF");
+  assert(!predictorOffAgain.isActive, "Predictor active class must be removed");
+
+  // Test Turn Switcher
+  console.log("Testing 1-tap Turn Switcher...");
+  const curTurn = await cdp.evaluate(`document.querySelector('.turn-toggle-chip')?.textContent.trim()`);
+  console.log("Current turn chip (after White move):", curTurn);
+  assert(curTurn.includes('Black'), "Turn after White played e4 should be Black");
+  await cdp.clickSelector('[data-sandbox-action="toggle-turn"]');
+  await delay(500);
+  const flippedTurn = await cdp.evaluate(`document.querySelector('.turn-toggle-chip')?.textContent.trim()`);
+  console.log("Turn chip after toggle:", flippedTurn);
+  assert(flippedTurn.includes('White'), "Turn should flip to White");
+  await cdp.clickSelector('[data-sandbox-action="toggle-turn"]');
+  await delay(500);
+  const restoredTurn = await cdp.evaluate(`document.querySelector('.turn-toggle-chip')?.textContent.trim()`);
+  assert(restoredTurn.includes('Black'), "Turn should flip back to Black");
 
   // Test FEN Sheet
   console.log("Testing FEN modal sheet...");
@@ -355,17 +370,117 @@ async function run() {
   await cdp.clickSelector('[data-sheet-close]');
   await delay(1000);
 
-  // Test Clear Board (leaves only 2 kings to preserve chess legality)
-  console.log("Testing Clear Board...");
+  // Test Clear Board (produces 100% empty canvas, 0 pieces)
+  console.log("Testing Clear Board (blank canvas)...");
   await cdp.clickSelector('[data-sandbox-action="clear"]');
   await delay(1000);
   const piecesCountAfterClear = await cdp.evaluate(`
     document.querySelectorAll('.square .piece-svg').length
   `);
-  console.log("Pieces count after Clear (2 kings):", piecesCountAfterClear);
-  assert.equal(piecesCountAfterClear, 2, "Clear board must leave only the two kings (2 pieces) for engine legality");
+  console.log("Pieces count after Clear (blank canvas):", piecesCountAfterClear);
+  assert.equal(piecesCountAfterClear, 0, "Clear board must leave 0 pieces (completely empty canvas)");
+
+  // Test Piece Palette: Tap-to-stamp custom pieces
+  console.log("Testing Piece Palette: placing White Queens...");
+  // Select White Queen (piece 5)
+  await cdp.clickSelector('[data-sandbox-palette="5"]');
+  await delay(500);
+  // Stamp on d4 (28) and e4 (36)
+  await cdp.tapSquare(28);
+  await delay(500);
+  await cdp.tapSquare(36);
+  await delay(500);
+  await cdp.assertPiece(28, "White queen");
+  await cdp.assertPiece(36, "White queen");
+  console.log("Placed 2 White Queens on d4 and e4.");
+
+  // Test Eraser: remove piece from e4
+  console.log("Testing Eraser tool...");
+  await cdp.clickSelector('[data-sandbox-palette="0"]');
+  await delay(500);
+  await cdp.tapSquare(36);
+  await delay(500);
+  const e4Piece = await cdp.evaluate(`document.querySelector('[data-square="36"]')?.getAttribute('aria-label')`);
+  console.log("Square 36 after eraser:", e4Piece);
+  assert(e4Piece && e4Piece.includes('empty'), "Square 36 must be empty after using eraser");
+
+  // Test placing both kings and toggling evaluation
+  console.log("Placing White King and Black King...");
+  await cdp.clickSelector('[data-sandbox-palette="6"]');
+  await delay(400);
+  await cdp.tapSquare(60); // e1
+  await delay(500);
   await cdp.assertPiece(60, "White king");
+
+  await cdp.clickSelector('[data-sandbox-palette="-6"]');
+  await delay(400);
+  await cdp.tapSquare(4); // e8
+  await delay(500);
   await cdp.assertPiece(4, "Black king");
+
+  // Test drag-and-drop from palette (real touch input) and that the trailing click does not toggle the tool
+  console.log("Testing palette drag-and-drop (Black Rook -> a8)...");
+  const centerOf = async (sel) => await cdp.evaluate(`(function(){const r=document.querySelector('${sel}').getBoundingClientRect();return {x:r.left+r.width/2,y:r.top+r.height/2};})()`);
+  await cdp.clickSelector('[data-sandbox-palette="move"]');
+  await delay(400);
+  const from = await centerOf('[data-sandbox-palette="-4"]');
+  const to = await centerOf('[data-square="0"]');
+  const touch = (type, p) => cdp.call('Input.dispatchTouchEvent', {type, touchPoints: type === 'touchEnd' ? [] : [{x: p.x, y: p.y, id: 1}]});
+  await touch('touchStart', from);
+  for (let i = 1; i <= 10; i++) {
+    await touch('touchMove', {x: from.x + (to.x - from.x) * i / 10, y: from.y + (to.y - from.y) * i / 10});
+    await delay(30);
+  }
+  await touch('touchEnd', to);
+  await delay(900);
+  await cdp.assertPiece(0, "Black rook");
+  const toolAfterDrag = await cdp.evaluate(`document.querySelector('[data-sandbox-palette="move"]')?.classList.contains('palette-btn--active')`);
+  assert(toolAfterDrag, "Dragging from the palette must not change the active tool (Move stays active)");
+  console.log("Palette drag placed Black rook on a8; tool unchanged.");
+
+  // Switch to Move mode
+  await cdp.clickSelector('[data-sandbox-palette="move"]');
+  await delay(400);
+
+  // Turn ON predictor on the custom position
+  console.log("Turning on Best Move predictor on custom position...");
+  await cdp.clickSelector('[data-sandbox-action="eval"]');
+  await delay(500);
+  let customEval = '';
+  for (let i = 0; i < 24; i++) {
+    customEval = await cdp.evaluate(`document.querySelector('.best-move-chip')?.textContent.trim()`);
+    if (/[+\-−#]\d/.test(customEval)) break;
+    await delay(500);
+  }
+  console.log("Custom position evaluation chip:", customEval);
+  assert(/[+\-−#]\d/.test(customEval), `Predictor must show a real live evaluation with both kings, got: "${customEval}"`);
+
+  // Invalid setup (pawn on rank 8) with predictor ON must be rejected safely, not crash the native engine
+  console.log("Testing invalid setup safety (white pawn on b8 with predictor ON)...");
+  await cdp.clickSelector('[data-sandbox-palette="1"]');
+  await delay(400);
+  await cdp.tapSquare(1);
+  await delay(1200);
+  const invalidChip = await cdp.evaluate(`document.querySelector('.best-move-chip')?.textContent.trim()`);
+  console.log("Predictor chip with invalid setup:", invalidChip);
+  assert(invalidChip && invalidChip.includes('Invalid setup'), `Invalid setup must be reported, got: "${invalidChip}"`);
+  await cdp.clickSelector('[data-sandbox-palette="0"]');
+  await delay(300);
+  await cdp.tapSquare(1);
+  await delay(1500);
+  await cdp.clickSelector('[data-sandbox-palette="move"]');
+  await delay(300);
+  let recovered = '';
+  for (let i = 0; i < 24; i++) {
+    recovered = await cdp.evaluate(`document.querySelector('.best-move-chip')?.textContent.trim()`);
+    if (/[+\-−#]\d/.test(recovered)) break;
+    await delay(500);
+  }
+  assert(/[+\-−#]\d/.test(recovered), `Predictor must recover after fixing the setup, got: "${recovered}"`);
+
+  // Turn off predictor
+  await cdp.clickSelector('[data-sandbox-action="eval"]');
+  await delay(600);
 
   // Test Reset Board
   console.log("Testing Reset Board...");
@@ -378,13 +493,13 @@ async function run() {
   assert.equal(piecesCountAfterReset, 32, "Reset board must restore all 32 starting pieces");
 
   // Test Back button navigation
-  console.log("Testing header back button...");
-  await cdp.clickSelector('.header-back');
+  console.log("Testing back button...");
+  await cdp.clickSelector('[data-action="nav-play"]');
   await delay(1000);
   const currentScreen = await cdp.evaluate(`document.getElementById('app')?.dataset.screen`);
   console.log("Screen after back button:", currentScreen);
   assert.equal(currentScreen, 'play', "Back button from Sandbox must navigate back to Play screen");
-  console.log("✓ Test 4 PASSED: Sandbox free movement, undo, redo, eval, FEN, clear, reset, and navigation verified!");
+  console.log("✓ Test 4 PASSED: Sandbox editor, piece palette, eraser, predictor toggle, turn switch, blank canvas, and reset verified!");
 
   console.log("\n========================================================");
   console.log("ALL STEP 3 HARDWARE ACCEPTANCE TESTS PASSED SUCCESSFULLY!");

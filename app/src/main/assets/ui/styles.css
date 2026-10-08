@@ -738,6 +738,208 @@ button:disabled { cursor: not-allowed; opacity: .48; }
   line-height: 1.35;
 }
 
+/* Sandbox & Board Editor Styling */
+.sandbox-workspace {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  height: 100%;
+  max-height: calc(100dvh - 56px);
+  padding: 4px 10px;
+}
+.sandbox-topline {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  min-height: 40px;
+}
+.sandbox-title-wrap {
+  flex: 1;
+  min-width: 0;
+}
+.sandbox-title {
+  font-size: .88rem;
+  font-weight: 700;
+  color: var(--ivory);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.sandbox-top-controls {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.turn-toggle-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  background: rgba(255, 255, 255, .08);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--ivory);
+  font-size: .76rem;
+  font-weight: 700;
+  cursor: pointer;
+  min-height: 34px;
+  transition: all .15s ease;
+}
+.turn-toggle-chip:active {
+  background: rgba(255, 255, 255, .18);
+  transform: scale(0.97);
+}
+.turn-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  display: inline-block;
+  flex-shrink: 0;
+}
+.turn-dot--white {
+  background: #ffffff;
+  border: 1.5px solid #222222;
+  box-shadow: 0 0 4px rgba(255, 255, 255, .5);
+}
+.turn-dot--black {
+  background: #181818;
+  border: 1.5px solid #888888;
+  box-shadow: 0 0 4px rgba(0, 0, 0, .5);
+}
+.best-move-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 11px;
+  background: #1c2638;
+  border: 1.5px solid var(--line);
+  border-radius: 999px;
+  color: var(--muted);
+  font-size: .76rem;
+  font-weight: 700;
+  cursor: pointer;
+  min-height: 34px;
+  transition: all .2s ease;
+}
+.best-move-chip .ui-icon {
+  width: 15px;
+  height: 15px;
+}
+.best-move-chip:active {
+  transform: scale(0.97);
+}
+.best-move-chip--active {
+  background: rgba(115, 223, 196, .14);
+  border-color: var(--mint);
+  color: var(--mint);
+  box-shadow: 0 0 10px rgba(115, 223, 196, .28);
+}
+.best-move-chip--active .ui-icon {
+  stroke: var(--mint);
+}
+.sandbox-status-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 2px 4px;
+  min-height: 22px;
+  font-size: .74rem;
+  color: var(--mist);
+}
+.sandbox-status-text {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sandbox-status-text .ui-icon {
+  width: 14px;
+  height: 14px;
+}
+.sandbox-palette-container {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 5px;
+  background: #111a28;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-m);
+}
+.palette-row {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 4px;
+  align-items: center;
+}
+.palette-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  aspect-ratio: 1;
+  min-height: 40px;
+  padding: 2px;
+  border-radius: var(--radius-s);
+  background: rgba(255, 255, 255, .04);
+  border: 1.5px solid transparent;
+  cursor: pointer;
+  transition: all .15s ease;
+  touch-action: none;
+}
+.palette-btn .piece-svg {
+  width: 84%;
+  height: 84%;
+  pointer-events: none;
+}
+.palette-btn:active {
+  transform: scale(0.93);
+}
+.palette-btn--tool {
+  font-size: .63rem;
+  font-weight: 700;
+  color: var(--muted);
+  gap: 1px;
+  background: rgba(255, 255, 255, .07);
+}
+.palette-btn--tool .ui-icon {
+  width: 17px;
+  height: 17px;
+}
+.palette-btn--active {
+  border-color: var(--mint);
+  background: rgba(115, 223, 196, .18);
+  box-shadow: 0 0 10px rgba(115, 223, 196, .35);
+  color: var(--mint);
+}
+.palette-btn--trash.palette-btn--active {
+  border-color: var(--rose);
+  background: rgba(235, 94, 85, .18);
+  box-shadow: 0 0 10px rgba(235, 94, 85, .35);
+  color: var(--rose);
+}
+.sandbox-toolbar {
+  display: grid;
+  grid-template-columns: repeat(6, 1fr);
+  gap: 4px;
+  margin-top: 2px;
+}
+.sandbox-toolbar .button {
+  min-height: 40px;
+  padding: 4px 4px;
+  font-size: .7rem;
+  font-weight: 600;
+  justify-content: center;
+  gap: 3px;
+}
+.sandbox-toolbar .button .ui-icon {
+  width: 13px;
+  height: 13px;
+}
+
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: .001ms !important; animation-iteration-count: 1 !important; scroll-behavior: auto !important; transition-duration: .001ms !important; }
 }

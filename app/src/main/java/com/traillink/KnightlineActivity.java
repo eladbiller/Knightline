@@ -107,7 +107,7 @@ public final class KnightlineActivity extends ChessLinkActivity {
     private Game sandboxGame;
     private final ArrayList<Game> sandboxHistory = new ArrayList<>();
     private final ArrayList<Game> sandboxRedo = new ArrayList<>();
-    private boolean sandboxEvalEnabled = true;
+    private boolean sandboxEvalEnabled = false;
     private StockfishEngine.Coach sandboxCoach;
     private volatile long sandboxSearchGen = 0;
     private boolean isReconnecting = false;
@@ -1056,6 +1056,9 @@ public final class KnightlineActivity extends ChessLinkActivity {
             case "sandbox.redo": redoSandbox(); return;
             case "sandbox.eval":
             case "sandbox.toggleEval": toggleSandboxEval(); return;
+            case "sandbox.setPiece": setSandboxPiece(payload); return;
+            case "sandbox.setTurn": setSandboxTurn(payload); return;
+            case "sandbox.toggleTurn": toggleSandboxTurn(); return;
             case "sandbox.loadFen": loadSandboxFen(payload); return;
             case "transport.settings": openBluetoothSettings(); return;
             case "online.host": beginOnlineRoom(true, payload); return;
@@ -2047,11 +2050,76 @@ public final class KnightlineActivity extends ChessLinkActivity {
         sandboxHistory.add(sandboxGame.copy());
         sandboxRedo.clear();
         java.util.Arrays.fill(sandboxGame.b, 0);
-        sandboxGame.b[60] = 6;
-        sandboxGame.b[4] = -6;
         sandboxCoach = null;
         evaluateSandbox();
         publishState();
+    }
+
+    private void setSandboxPiece(JSONObject payload) {
+        if (sandboxGame == null) sandboxGame = new Game(0, 0);
+        int square = payload.optInt("square", -1);
+        int piece = payload.optInt("piece", 0);
+        if (square >= 0 && square < 64) {
+            sandboxHistory.add(sandboxGame.copy());
+            sandboxRedo.clear();
+            sandboxGame.b[square] = piece;
+            sandboxCoach = null;
+            if (sandboxEvalEnabled) evaluateSandbox();
+            publishState();
+        }
+    }
+
+    private void setSandboxTurn(JSONObject payload) {
+        if (sandboxGame == null) sandboxGame = new Game(0, 0);
+        int turn = payload.optInt("turn", 0);
+        sandboxHistory.add(sandboxGame.copy());
+        sandboxRedo.clear();
+        sandboxGame.turn = turn == 1 ? 1 : 0;
+        sandboxCoach = null;
+        if (sandboxEvalEnabled) evaluateSandbox();
+        publishState();
+    }
+
+    private void toggleSandboxTurn() {
+        if (sandboxGame == null) sandboxGame = new Game(0, 0);
+        sandboxHistory.add(sandboxGame.copy());
+        sandboxRedo.clear();
+        sandboxGame.turn = 1 - sandboxGame.turn;
+        sandboxCoach = null;
+        if (sandboxEvalEnabled) evaluateSandbox();
+        publishState();
+    }
+
+    /**
+     * A free-form editor can create positions Stockfish treats as undefined behaviour
+     * (stale castling rights, pawns on the back ranks, extra kings, the side that just
+     * moved left in check). Normalize what can be repaired and report whether the rest
+     * is a legal-enough position to hand to move generation and the native engine.
+     */
+    private boolean hasBothKings(Game g) {
+        if (g == null) return false;
+        int whiteKings = 0, blackKings = 0;
+        for (int i = 0; i < 64; i++) {
+            int p = g.b[i];
+            if (p == 6) whiteKings++;
+            else if (p == -6) blackKings++;
+            else if ((p == 1 || p == -1) && (i < 8 || i >= 56)) return false;
+        }
+        if (whiteKings != 1 || blackKings != 1) return false;
+        int rights = 0;
+        if (g.b[60] == 6 && g.b[63] == 4) rights |= 1;
+        if (g.b[60] == 6 && g.b[56] == 4) rights |= 2;
+        if (g.b[4] == -6 && g.b[7] == -4) rights |= 4;
+        if (g.b[4] == -6 && g.b[0] == -4) rights |= 8;
+        g.rights &= rights;
+        if (g.ep >= 0) {
+            int victim = g.ep + (g.turn == 0 ? 8 : -8);
+            boolean valid = g.ep < 64 && victim >= 0 && victim < 64 && g.b[g.ep] == 0
+                    && g.b[victim] == (g.turn == 0 ? -1 : 1);
+            if (!valid) g.ep = -1;
+        }
+        // The side NOT to move must not be in check, otherwise the king is capturable.
+        return !g.check(1 - g.turn);
     }
 
     private void undoSandbox() {
@@ -2075,6 +2143,7 @@ public final class KnightlineActivity extends ChessLinkActivity {
     private void toggleSandboxEval() {
         sandboxEvalEnabled = !sandboxEvalEnabled;
         if (sandboxEvalEnabled) evaluateSandbox();
+        else sandboxCoach = null;
         publishState();
     }
 
@@ -2094,7 +2163,10 @@ public final class KnightlineActivity extends ChessLinkActivity {
     }
 
     private void evaluateSandbox() {
-        if (!sandboxEvalEnabled || sandboxGame == null) return;
+        if (!sandboxEvalEnabled || sandboxGame == null || !hasBothKings(sandboxGame)) {
+            sandboxCoach = null;
+            return;
+        }
         final long gen = ++sandboxSearchGen;
         final Game pos = sandboxGame.copy();
         worker.execute(() -> {
@@ -2115,13 +2187,16 @@ public final class KnightlineActivity extends ChessLinkActivity {
     private JSONObject sandboxPayload() {
         if (!"sandbox".equals(requestedScreen)) return obj("available", false);
         if (sandboxGame == null) sandboxGame = new Game(0, 0);
+        boolean ready = hasBothKings(sandboxGame);
         JSONArray moves = new JSONArray();
-        for (int[] m : sandboxGame.legal()) moves.put(array(m));
+        if (ready) {
+            for (int[] m : sandboxGame.legal()) moves.put(array(m));
+        }
         JSONObject position = obj(
                 "b", array(sandboxGame.b),
                 "moves", moves,
                 "turn", sandboxGame.turn,
-                "winner", sandboxGame.winner,
+                "winner", ready ? sandboxGame.winner : -1,
                 "seq", sandboxHistory.size(),
                 "lastA", sandboxGame.lastA,
                 "lastZ", sandboxGame.lastZ
@@ -2137,8 +2212,13 @@ public final class KnightlineActivity extends ChessLinkActivity {
         JSONObject coachObj = new JSONObject();
         try {
             coachObj.put("evaluation", sandboxCoach != null ? formatEvaluation(sandboxCoach) : "—");
-            coachObj.put("evaluationState", sandboxCoach != null ? "Live" : "Analyzing");
+            coachObj.put("evaluationState", sandboxCoach != null ? "Live" : (sandboxEvalEnabled ? "Analyzing" : "Off"));
             coachObj.put("explanation", sandboxCoach != null ? sandboxCoach.explanation : "");
+            if (sandboxCoach != null && sandboxCoach.move != null && sandboxCoach.move.length >= 2) {
+                try {
+                    coachObj.put("bestMoveSan", ChessNotation.san(sandboxGame, sandboxCoach.move[0], sandboxCoach.move[1], 5));
+                } catch (Exception ignored) {}
+            }
         } catch (Exception ignored) {}
         return obj(
                 "available", true,
@@ -2147,6 +2227,7 @@ public final class KnightlineActivity extends ChessLinkActivity {
                 "canUndo", !sandboxHistory.isEmpty(),
                 "canRedo", !sandboxRedo.isEmpty(),
                 "evalEnabled", sandboxEvalEnabled,
+                "hasBothKings", ready,
                 "fen", StockfishEngine.fen(sandboxGame),
                 "coach", coachObj,
                 "yourTurn", true

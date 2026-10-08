@@ -40,6 +40,9 @@
   let puzzleFilter = 'warmup';
   let puzzlePage = 0;
   let learnSection = 'puzzles';
+  let selectedPalettePiece = null;
+  let paletteDrag = null;
+  let suppressNextPaletteClick = false;
 
   const clockNames = ['10 | 0', '5 | 0', '3 | 2', '1 | 0', 'Untimed'];
   const strengthNames = ['Easy', 'Medium', 'Hard'];
@@ -73,6 +76,7 @@
       copy: '<rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>',
       sandbox: '<path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/>',
       redo: '<path d="M16 7h5v-5M20.5 7A9 9 0 1 0 20 18"/>',
+      hand: '<path d="M18 11V6a2 2 0 0 0-4 0v5M14 10V4a2 2 0 0 0-4 0v7M10 10.5V6a2 2 0 0 0-4 0v8c0 4.4 3.6 8 8 8h1a8 8 0 0 0 8-8v-4a2 2 0 0 0-4 0v1"/>',
     };
     return '<svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">' + (paths[name] || paths.more) + '</svg>';
   }
@@ -132,6 +136,7 @@
     // and will immediately correct state if a command changes the destination.
     // This removes the perceptible bridge round trip when moving between tabs.
     if (model.screen !== screen) {
+      if (model.screen === 'sandbox') selectedPalettePiece = null;
       model.screen = screen;
       render();
     }
@@ -146,6 +151,7 @@
     const payload = object(event.payload, {});
     applyFontScale(payload.fontScale);
     model.screen = payload.screen || model.screen;
+    if (model.screen !== 'sandbox') selectedPalettePiece = null;
     model.backTarget = payload.backTarget || 'home';
     model.session = payload.session || '';
     model.transport = object(payload.transport, model.transport);
@@ -441,51 +447,79 @@
     const position = object(sandbox.position, {});
     const coach = object(sandbox.coach, {});
     const evalEnabled = !!sandbox.evalEnabled;
+    const hasKings = !!sandbox.hasBothKings;
     const effectiveMe = 0 ^ (model.manualFlip ? 1 : 0);
     const captured = computeCaptured(array(position.b));
     const turn = Number(position.turn || 0);
 
+    let statusText = '';
+    if (selectedPalettePiece === 0) {
+      statusText = '<span style="color:var(--rose);">' + icon('trash') + ' Eraser active · Tap pieces on board to remove</span>';
+    } else if (selectedPalettePiece !== null) {
+      statusText = '<span>' + icon('hint') + ' Stamp mode · Tap squares to place ' + (selectedPalettePiece > 0 ? 'White ' : 'Black ') + ['','Pawn','Knight','Bishop','Rook','Queen','King'][Math.abs(selectedPalettePiece)] + '</span>';
+    } else if (!hasKings) {
+      statusText = '<span style="color:var(--gold);">' + icon('hint') + ' Setup needs 1 king per side, no pawns on rank 1/8, and the waiting side not in check</span>';
+    } else if (evalEnabled) {
+      statusText = '<span style="color:var(--mint);">' + icon('engine') + ' Best Move active · ' + (coach.bestMoveSan ? 'Engine prefers ' + escape(coach.bestMoveSan) : 'Calculating…') + '</span>';
+    } else {
+      statusText = '<span>Play mode · Drag or tap pieces to test moves · Best Move OFF</span>';
+    }
+
+    const matBadge = captured.diff !== 0 ?
+      '<span class="material-badge">' + (captured.diff > 0 ? '+W' + captured.diff : '+B' + (-captured.diff)) + '</span>' : '';
+
+    const whitePieces = [6, 5, 4, 3, 2, 1];
+    const blackPieces = [-6, -5, -4, -3, -2, -1];
+    const pieceLabels = {
+      '6': 'White King', '5': 'White Queen', '4': 'White Rook', '3': 'White Bishop', '2': 'White Knight', '1': 'White Pawn',
+      '-6': 'Black King', '-5': 'Black Queen', '-4': 'Black Rook', '-3': 'Black Bishop', '-2': 'Black Knight', '-1': 'Black Pawn'
+    };
+
+    const whiteRowHtml = whitePieces.map((p) => {
+      const active = selectedPalettePiece === p;
+      return '<button class="palette-btn' + (active ? ' palette-btn--active' : '') + '" type="button" data-sandbox-palette="' + p + '" aria-pressed="' + active + '" aria-label="' + pieceLabels[p] + '">' + pieceSvg(p) + '</button>';
+    }).join('') +
+    '<button class="palette-btn palette-btn--tool' + (selectedPalettePiece === null ? ' palette-btn--active' : '') + '" type="button" data-sandbox-palette="move" aria-pressed="' + (selectedPalettePiece === null) + '" aria-label="Play and move mode">' + icon('hand') + '<span>Move</span></button>';
+
+    const blackRowHtml = blackPieces.map((p) => {
+      const active = selectedPalettePiece === p;
+      return '<button class="palette-btn' + (active ? ' palette-btn--active' : '') + '" type="button" data-sandbox-palette="' + p + '" aria-pressed="' + active + '" aria-label="' + pieceLabels[p] + '">' + pieceSvg(p) + '</button>';
+    }).join('') +
+    '<button class="palette-btn palette-btn--tool palette-btn--trash' + (selectedPalettePiece === 0 ? ' palette-btn--active' : '') + '" type="button" data-sandbox-palette="0" aria-pressed="' + (selectedPalettePiece === 0) + '" aria-label="Eraser tool">' + icon('trash') + '<span>Eraser</span></button>';
+
+    const bestMoveText = evalEnabled ?
+      (hasKings ? 'Best Move: ' + (coach.evaluation || 'Live') + (coach.bestMoveSan ? ' (' + escape(coach.bestMoveSan) + ')' : '') : 'Invalid setup') :
+      'Best Move: OFF';
+
     const markup =
       '<section class="screen screen--game sandbox-workspace">' +
-        '<div class="game-topline">' +
-          '<div>' +
-            '<p class="game-name">Sandbox · Analysis Board</p>' +
-            '<span class="game-integrity">' + (turn === 0 ? 'White to move' : 'Black to move') + '</span>' +
+        '<div class="sandbox-topline">' +
+          '<button class="icon-button" type="button" data-action="nav-play" aria-label="Back to play menu">' + icon('back') + '</button>' +
+          '<div class="sandbox-title-wrap">' +
+            '<span class="sandbox-title">Sandbox</span>' +
           '</div>' +
-          (evalEnabled ?
-            '<button class="eval-chip" type="button" data-sandbox-action="eval" aria-label="Stockfish evaluation ' + escape(coach.evaluation || '—') + '">' +
-              '<span class="eval-label">EVAL</span><span data-evaluation>' + escape(coach.evaluation || '—') + '</span>' +
-              '<span class="eval-state">' + escape(coach.evaluationState || 'Analyzing') + '</span>' +
-            '</button>' :
-            '<button class="button button--compact" type="button" data-sandbox-action="eval">' + icon('engine') + ' Enable Eval</button>') +
+          '<div class="sandbox-top-controls">' +
+            '<button class="turn-toggle-chip" type="button" data-sandbox-action="toggle-turn" aria-label="Turn: ' + (turn === 0 ? 'White' : 'Black') + '. Tap to toggle.">' +
+              '<span class="turn-dot turn-dot--' + (turn === 0 ? 'white' : 'black') + '"></span>' +
+              '<span>' + (turn === 0 ? 'White' : 'Black') + '</span>' +
+            '</button>' +
+            '<button class="best-move-chip' + (evalEnabled ? ' best-move-chip--active' : '') + '" type="button" data-sandbox-action="eval" aria-label="Best Move Predictor. Tap to toggle.">' +
+              icon('engine') +
+              '<span>' + bestMoveText + '</span>' +
+            '</button>' +
+          '</div>' +
         '</div>' +
-        playerCard(
-          effectiveMe === 0 ? 'Black' : 'White',
-          'Free analysis',
-          effectiveMe === 0 ? 'B' : 'W',
-          '',
-          turn === (1 - effectiveMe),
-          false,
-          'opponent',
-          effectiveMe === 0 ? captured.blackCaptured : captured.whiteCaptured,
-          effectiveMe === 0 ? (captured.diff < 0 ? -captured.diff : 0) : (captured.diff > 0 ? captured.diff : 0),
-          'top'
-        ) +
         '<div id="board-host" class="board-stage">' +
           boardLayout(position, effectiveMe, true, coach, evalEnabled) +
         '</div>' +
-        playerCard(
-          effectiveMe === 0 ? 'White' : 'Black',
-          'Free analysis',
-          effectiveMe === 0 ? 'W' : 'B',
-          '',
-          turn === effectiveMe,
-          false,
-          'you',
-          effectiveMe === 0 ? captured.whiteCaptured : captured.blackCaptured,
-          effectiveMe === 0 ? (captured.diff > 0 ? captured.diff : 0) : (captured.diff < 0 ? -captured.diff : 0),
-          'bottom'
-        ) +
+        '<div class="sandbox-status-bar">' +
+          '<div class="sandbox-status-text">' + statusText + '</div>' +
+          matBadge +
+        '</div>' +
+        '<div class="sandbox-palette-container" aria-label="Piece Palette">' +
+          '<div class="palette-row palette-row--white">' + whiteRowHtml + '</div>' +
+          '<div class="palette-row palette-row--black">' + blackRowHtml + '</div>' +
+        '</div>' +
         '<div class="sandbox-toolbar">' +
           '<button class="button button--compact" type="button" data-sandbox-action="reset">' + icon('undo') + ' Reset</button>' +
           '<button class="button button--compact" type="button" data-sandbox-action="clear">' + icon('trash') + ' Clear</button>' +
@@ -496,6 +530,92 @@
         '</div>' +
       '</section>';
     paintBoardWorkspace(markup, '.sandbox-workspace');
+    attachPaletteInteractions();
+  }
+
+  function attachPaletteInteractions() {
+    const container = main.querySelector('.sandbox-palette-container');
+    if (!container || container.dataset.paletteAttached === 'true') return;
+    container.dataset.paletteAttached = 'true';
+    const board = main.querySelector('.board');
+
+    container.querySelectorAll('[data-sandbox-palette]').forEach((button) => {
+      const val = button.dataset.sandboxPalette;
+      if (val === 'move') return;
+      const pieceNum = Number(val);
+
+      button.addEventListener('pointerdown', (event) => {
+        if (!event.isPrimary || event.button !== 0 || paletteDrag) return;
+        paletteDrag = {
+          piece: pieceNum,
+          button: button,
+          pointer: event.pointerId,
+          x: event.clientX,
+          y: event.clientY,
+          active: false,
+          ghost: null
+        };
+        button.setPointerCapture(event.pointerId);
+      });
+
+      button.addEventListener('pointermove', (event) => {
+        const d = paletteDrag;
+        if (!d || d.pointer !== event.pointerId) return;
+        if (!d.active && Math.hypot(event.clientX - d.x, event.clientY - d.y) < 8) return;
+        if (!d.active) {
+          d.active = true;
+          const ghost = document.createElement('div');
+          ghost.className = 'drag-piece';
+          ghost.setAttribute('aria-hidden', 'true');
+          ghost.style.width = ghost.style.height = '48px';
+          if (d.piece !== 0) {
+            ghost.innerHTML = pieceSvg(d.piece);
+          } else {
+            ghost.innerHTML = icon('trash');
+          }
+          document.body.appendChild(ghost);
+          d.ghost = ghost;
+        }
+        event.preventDefault();
+        d.ghost.style.transform = `translate3d(${event.clientX - 24}px,${event.clientY - 24}px,0)`;
+        const target = document.elementFromPoint(event.clientX, event.clientY)?.closest('[data-square]');
+        if (target && board && board.contains(target)) {
+          board.querySelectorAll('.square--drop').forEach(s => s.classList.remove('square--drop'));
+          target.classList.add('square--drop');
+        } else if (board) {
+          board.querySelectorAll('.square--drop').forEach(s => s.classList.remove('square--drop'));
+        }
+      });
+
+      button.addEventListener('pointerup', (event) => {
+        const d = paletteDrag;
+        if (!d || d.pointer !== event.pointerId) return;
+        if (board) board.querySelectorAll('.square--drop').forEach(s => s.classList.remove('square--drop'));
+        if (d.ghost) d.ghost.remove();
+        if (d.button.hasPointerCapture(d.pointer)) d.button.releasePointerCapture(d.pointer);
+        const wasActive = d.active;
+        paletteDrag = null;
+        if (wasActive) {
+          suppressNextBoardClick = true;
+          suppressNextPaletteClick = true;
+          window.setTimeout(() => { suppressNextPaletteClick = false; }, 350);
+          const target = document.elementFromPoint(event.clientX, event.clientY)?.closest('[data-square]');
+          if (target && board && board.contains(target)) {
+            send('sandbox.setPiece', {square: Number(target.dataset.square), piece: d.piece});
+          }
+          window.setTimeout(() => { suppressNextBoardClick = false; }, 350);
+        }
+      });
+
+      button.addEventListener('pointercancel', () => {
+        if (paletteDrag) {
+          if (board) board.querySelectorAll('.square--drop').forEach(s => s.classList.remove('square--drop'));
+          if (paletteDrag.ghost) paletteDrag.ghost.remove();
+          if (paletteDrag.button.hasPointerCapture(paletteDrag.pointer)) paletteDrag.button.releasePointerCapture(paletteDrag.pointer);
+          paletteDrag = null;
+        }
+      });
+    });
   }
 
   function openSandboxFenSheet() {
@@ -539,7 +659,7 @@
   function boardPositionKey() {
     const c = boardContext(), p = c?.position;
     const flip = (model.manualFlip ? 1 : 0) ^ (model.autoFlip ? 1 : 0);
-    return [model.screen,model.session,c?.token,c?.index,c?.me,flip,p?.seq,array(p?.b).join(',')].join(':');
+    return [model.screen,model.session,c?.token,c?.index,c?.me,flip,p?.seq,array(p?.b).join(','),selectedPalettePiece].join(':');
   }
   function paintBoardWorkspace(markup, selector) {
     const existing = main.querySelector(selector), key = boardPositionKey();
@@ -562,10 +682,12 @@
       if (rail && nextRail) { rail.setAttribute('aria-label', nextRail.getAttribute('aria-label')); rail.innerHTML = nextRail.innerHTML; }
       refreshBoardOnly();
       attachBoardInteractions();
+      if (selector === '.sandbox-workspace') attachPaletteInteractions();
     } else {
       cancelBoardDrag(); main.innerHTML = markup;
       main.querySelector(selector).dataset.positionKey = key;
       attachBoardInteractions();
+      if (selector === '.sandbox-workspace') attachPaletteInteractions();
     }
   }
   function puzzleCommand(type, payload) {
@@ -1030,6 +1152,7 @@
         if (!event.isPrimary || event.button !== 0 || boardDrag) return;
         suppressNextBoardClick = false;
         const from = Number(button.dataset.square);
+        if (model.screen === 'sandbox' && selectedPalettePiece !== null) return;
         if (overlay || movePending || !boardContext()?.yourTurn || !canSelectFrom(from)) return;
         boardDrag = {from,button,board,key:boardPositionKey(),pointer:event.pointerId,x:event.clientX,y:event.clientY,
           previous:selectedSquare,active:false,ghost:null,drop:null};
@@ -1096,6 +1219,10 @@
   }
 
   function selectSquare(square) {
+    if (model.screen === 'sandbox' && selectedPalettePiece !== null) {
+      send('sandbox.setPiece', {square: square, piece: selectedPalettePiece});
+      return;
+    }
     if (movePending || !boardContext() || !boardContext().yourTurn) return;
     if (selectedSquare == null) {
       if (canSelectFrom(square)) {
@@ -1740,6 +1867,24 @@
       }
       return;
     }
+    const paletteBtn = event.target.closest('[data-sandbox-palette]');
+    if (paletteBtn) {
+      if (suppressNextPaletteClick) { suppressNextPaletteClick = false; return; }
+      const val = paletteBtn.dataset.sandboxPalette;
+      if (val === 'move') {
+        selectedPalettePiece = null;
+      } else {
+        const pieceNum = Number(val);
+        if (selectedPalettePiece === pieceNum) {
+          selectedPalettePiece = null;
+        } else {
+          selectedPalettePiece = pieceNum;
+        }
+      }
+      selectedSquare = null;
+      renderSandbox();
+      return;
+    }
     const sbAction = event.target.closest('[data-sandbox-action]');
     if (sbAction) {
       const act = sbAction.dataset.sandboxAction;
@@ -1748,6 +1893,7 @@
       else if (act === 'undo') send('sandbox.undo');
       else if (act === 'redo') send('sandbox.redo');
       else if (act === 'eval') send('sandbox.toggleEval');
+      else if (act === 'toggle-turn') send('sandbox.toggleTurn');
       else if (act === 'fen') openSandboxFenSheet();
       return;
     }
