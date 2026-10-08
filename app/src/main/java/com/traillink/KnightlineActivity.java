@@ -2167,6 +2167,7 @@ public final class KnightlineActivity extends ChessLinkActivity {
             sandboxCoach = null;
             return;
         }
+        sandboxCoach = null; // Clear old evaluation immediately
         final long gen = ++sandboxSearchGen;
         final Game pos = sandboxGame.copy();
         worker.execute(() -> {
