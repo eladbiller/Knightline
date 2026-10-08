@@ -108,7 +108,9 @@ public final class KnightlineActivity extends ChessLinkActivity {
     private final ArrayList<Game> sandboxHistory = new ArrayList<>();
     private final ArrayList<Game> sandboxRedo = new ArrayList<>();
     private boolean sandboxEvalEnabled = false;
+    private boolean sandboxCoachEnabled = false;
     private StockfishEngine.Coach sandboxCoach;
+    private StockfishEngine.Review sandboxLastReview;
     private volatile long sandboxSearchGen = 0;
     private boolean isReconnecting = false;
     private long reconnectDeadline = 0;
@@ -898,6 +900,7 @@ public final class KnightlineActivity extends ChessLinkActivity {
             JSONObject command = new JSONObject(raw);
             String id = command.optString("id", "");
             String type = command.optString("type", "");
+            android.util.Log.i("KnightlineApp", "Received command: " + type);
             BridgeGuard.Decision decision = bridgeGuard.accept(command.optInt("v", -1), id, type,
                     command.optLong("seq", -1), uiReady);
             if (!decision.accepted) { reject(decision.rejection); return; }
@@ -1056,6 +1059,7 @@ public final class KnightlineActivity extends ChessLinkActivity {
             case "sandbox.redo": redoSandbox(); return;
             case "sandbox.eval":
             case "sandbox.toggleEval": toggleSandboxEval(); return;
+            case "sandbox.toggleCoach": toggleSandboxCoach(); return;
             case "sandbox.setPiece": setSandboxPiece(payload); return;
             case "sandbox.setTurn": setSandboxTurn(payload); return;
             case "sandbox.toggleTurn": toggleSandboxTurn(); return;
@@ -2147,6 +2151,13 @@ public final class KnightlineActivity extends ChessLinkActivity {
         publishState();
     }
 
+    private void toggleSandboxCoach() {
+        sandboxCoachEnabled = !sandboxCoachEnabled;
+        if (sandboxCoachEnabled) evaluateSandbox();
+        else sandboxLastReview = null;
+        publishState();
+    }
+
     private void loadSandboxFen(JSONObject payload) {
         String fen = payload.optString("fen", "").trim();
         try {
@@ -2163,25 +2174,67 @@ public final class KnightlineActivity extends ChessLinkActivity {
     }
 
     private void evaluateSandbox() {
-        if (!sandboxEvalEnabled || sandboxGame == null || !hasBothKings(sandboxGame)) {
+        if (!sandboxEvalEnabled && !sandboxCoachEnabled) {
             sandboxCoach = null;
+            sandboxLastReview = null;
+            return;
+        }
+        if (sandboxGame == null || !hasBothKings(sandboxGame)) {
+            sandboxCoach = null;
+            sandboxLastReview = null;
             return;
         }
         sandboxCoach = null; // Clear old evaluation immediately
+        sandboxLastReview = null; // Clear old review
         final long gen = ++sandboxSearchGen;
         final Game pos = sandboxGame.copy();
+        final Game prevPos = !sandboxHistory.isEmpty() ? sandboxHistory.get(sandboxHistory.size() - 1).copy() : null;
+        final int[] playedMove;
+        if (pos.lastA >= 0 && !pos.chessMoves.isEmpty()) {
+            playedMove = pos.chessMoves.get(pos.chessMoves.size() - 1);
+        } else if (pos.lastA >= 0) {
+            playedMove = new int[]{pos.lastA, pos.lastZ, 5};
+        } else {
+            playedMove = null;
+        }
+        final boolean doReview = sandboxCoachEnabled && prevPos != null && playedMove != null;
+
         worker.execute(() -> {
             try {
                 StockfishEngine sf = getStockfish();
-                if (sf == null) return;
-                StockfishEngine.Coach coach = sf.coach(pos, pos.turn);
+                if (sf == null) throw new Exception("No engine");
+                
+                StockfishEngine.Review review = null;
+                if (doReview) {
+                    review = sf.analyzePosition(prevPos, playedMove);
+                }
+                
+                StockfishEngine.Coach coach = null;
+                if (sandboxEvalEnabled) {
+                    coach = sf.coach(pos, pos.turn);
+                }
+
+                final StockfishEngine.Review finalReview = review;
+                final StockfishEngine.Coach finalCoach = coach;
+
                 if (gen != sandboxSearchGen) return;
                 handler.post(() -> {
                     if (gen != sandboxSearchGen || !"sandbox".equals(requestedScreen)) return;
-                    sandboxCoach = coach;
+                    sandboxLastReview = finalReview;
+                    sandboxCoach = finalCoach;
                     publishState();
                 });
-            } catch (Exception ignored) {}
+            } catch (Exception e) {
+                if (gen != sandboxSearchGen) return;
+                handler.post(() -> {
+                    if (gen != sandboxSearchGen || !"sandbox".equals(requestedScreen)) return;
+                    boolean noMoves = pos.legal().isEmpty();
+                    String score = noMoves ? (pos.check(pos.turn) ? "Checkmate" : "Stalemate") : ("Error: " + e.getMessage());
+                    sandboxCoach = new StockfishEngine.Coach(null, score, noMoves ? "Game over." : "Engine failed to evaluate.", 0, null, 0);
+                    sandboxLastReview = null;
+                    publishState();
+                });
+            }
         });
     }
 
@@ -2210,11 +2263,31 @@ public final class KnightlineActivity extends ChessLinkActivity {
                 } catch (Exception ignored) {}
             }
         }
+        if (sandboxLastReview != null && sandboxCoachEnabled) {
+            try {
+                if (sandboxGame.lastA >= 0) {
+                    position.put("playedFrom", sandboxGame.lastA);
+                    position.put("playedTo", sandboxGame.lastZ);
+                    String verdict = sandboxLastReview.text.split("\n")[0];
+                    if (verdict.contains("Best") || verdict.contains("forced mate")) position.put("arrowGrade", "best");
+                    else if (verdict.contains("Good")) position.put("arrowGrade", "excellent");
+                    else if (verdict.contains("inaccuracy")) position.put("arrowGrade", "inaccuracy");
+                    else if (verdict.contains("Mistake")) position.put("arrowGrade", "mistake");
+                    else if (verdict.contains("Blunder")) position.put("arrowGrade", "blunder");
+                    else position.put("arrowGrade", "played");
+                    position.put("reviewText", sandboxLastReview.text);
+                }
+            } catch (Exception ignored) {}
+        }
         JSONObject coachObj = new JSONObject();
         try {
-            coachObj.put("evaluation", sandboxCoach != null ? formatEvaluation(sandboxCoach) : "—");
+            coachObj.put("evaluation", sandboxCoach != null ? formatEvaluation(sandboxCoach) : "-");
             coachObj.put("evaluationState", sandboxCoach != null ? "Live" : (sandboxEvalEnabled ? "Analyzing" : "Off"));
-            coachObj.put("explanation", sandboxCoach != null ? sandboxCoach.explanation : "");
+            String debug = "doRev:" + (sandboxCoachEnabled && !sandboxHistory.isEmpty() && sandboxGame.lastA >= 0) + 
+                           " hist:" + sandboxHistory.size() + 
+                           " rev:" + (sandboxLastReview != null ? "yes" : "no") +
+                           " gen:" + sandboxSearchGen;
+            coachObj.put("explanation", debug);
             if (sandboxCoach != null && sandboxCoach.move != null && sandboxCoach.move.length >= 2) {
                 try {
                     coachObj.put("bestMoveSan", ChessNotation.san(sandboxGame, sandboxCoach.move[0], sandboxCoach.move[1], 5));
@@ -2228,6 +2301,7 @@ public final class KnightlineActivity extends ChessLinkActivity {
                 "canUndo", !sandboxHistory.isEmpty(),
                 "canRedo", !sandboxRedo.isEmpty(),
                 "evalEnabled", sandboxEvalEnabled,
+                "coachEnabled", sandboxCoachEnabled,
                 "hasBothKings", ready,
                 "fen", StockfishEngine.fen(sandboxGame),
                 "coach", coachObj,
@@ -2263,6 +2337,7 @@ public final class KnightlineActivity extends ChessLinkActivity {
 
     private String formatEvaluation(StockfishEngine.Coach result) {
         if (result == null) return "…";
+        if ("Checkmate".equals(result.score) || "Stalemate".equals(result.score)) return result.score;
         if (result.whiteMate != null) return (result.whiteMate > 0 ? "#" : "#-") + Math.abs(result.whiteMate);
         int value = result.whiteCentipawns;
         return String.format(Locale.ROOT, "%s%.2f", value >= 0 ? "+" : "-", Math.abs(value) / 100.0d);

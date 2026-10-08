@@ -11,9 +11,7 @@
   const toastRegion = document.getElementById('toast-region');
   const nav = document.querySelector('.bottom-nav');
 
-  const model = {
-    screen: 'home',
-    session: '',
+  const model = window._model = {
     transport: {ready: false, status: 'Preparing local board…', devices: []},
     profile: {rating: 800, ratedGames: 0, provisional: true, history: [], scope: 'Private skill rating · on this device'},
     lessons: {items: []},
@@ -117,6 +115,7 @@
     root.dataset.fontScaleTier = requested >= 145 ? 'large' : requested >= 120 ? 'medium' : 'normal';
   }
 
+  window._send = send;
   function send(type, payload, needsSession) {
     if (!port) return;
     const requiresSession = needsSession !== false;
@@ -128,6 +127,7 @@
       seq: ++sequence,
       payload: payload || {},
     };
+    console.log("Sending command:", type, JSON.stringify(envelope));
     port.postMessage(JSON.stringify(envelope));
   }
 
@@ -507,11 +507,16 @@
               icon('engine') +
               '<span>' + bestMoveText + '</span>' +
             '</button>' +
+            '<button class="best-move-chip' + (sandbox.coachEnabled ? ' best-move-chip--active' : '') + '" type="button" data-sandbox-action="toggle-coach" aria-label="Live Coach. Tap to toggle.">' +
+              icon('hint') +
+              '<span>' + (sandbox.coachEnabled ? 'Coach: ON' : 'Coach: OFF') + '</span>' +
+            '</button>' +
           '</div>' +
         '</div>' +
         '<div id="board-host" class="board-stage">' +
           boardLayout(position, effectiveMe, true, coach, evalEnabled) +
         '</div>' +
+        (sandbox.coachEnabled && position.reviewText ? '<article class="review-insight review-insight--' + escape(position.arrowGrade || 'played') + '" style="margin: 6px 12px;"><div class="insight-heading"><span class="coach-kicker">Live Coach</span></div><p class="coach-copy">' + escape(position.reviewText).replace(/\n/g, '<br>') + '</p></article>' : '') +
         '<div class="sandbox-status-bar">' +
           '<div class="sandbox-status-text">' + statusText + '</div>' +
           matBadge +
@@ -674,6 +679,11 @@
       if (boardHost && freshBoardHost) {
         if (freshOverlay) {
           boardHost.querySelector('.board-overlay')?.replaceWith(freshOverlay);
+        }
+        const oldLayout = boardHost.querySelector('.board-layout');
+        const newLayout = freshBoardHost.querySelector('.board-layout');
+        if (oldLayout && newLayout) {
+          oldLayout.dataset.evalEnabled = newLayout.dataset.evalEnabled;
         }
         freshBoardHost.replaceWith(boardHost);
       }
@@ -978,8 +988,8 @@
   }
 
   function boardLayout(position, me, interactive, coach, evaluationEnabled) {
-    const meter = evaluationEnabled ? evaluationMeter(coach, me) : '';
-    return '<div class="board-layout' + (evaluationEnabled ? ' board-layout--evaluated' : '') + '">' + meter + boardMarkup(position, me, interactive) + '</div>';
+    const meter = evaluationMeter(coach, me);
+    return '<div class="board-layout" data-eval-enabled="' + (evaluationEnabled ? 'true' : 'false') + '">' + meter + boardMarkup(position, me, interactive) + '</div>';
   }
 
   function evaluationMeter(coach, me) {
@@ -1893,6 +1903,7 @@
       else if (act === 'undo') send('sandbox.undo');
       else if (act === 'redo') send('sandbox.redo');
       else if (act === 'eval') send('sandbox.toggleEval');
+      else if (act === 'toggle-coach') send('sandbox.toggleCoach');
       else if (act === 'toggle-turn') send('sandbox.toggleTurn');
       else if (act === 'fen') openSandboxFenSheet();
       return;
