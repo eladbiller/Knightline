@@ -950,3 +950,49 @@ button:disabled { cursor: not-allowed; opacity: .48; }
   *, *::before, *::after { animation-duration: .001ms !important; animation-iteration-count: 1 !important; scroll-behavior: auto !important; transition-duration: .001ms !important; }
 }
 
+
+
+/* Tablet Landscape Mode */
+@media (min-width: 768px) and (orientation: landscape) {
+  .play-workspace,
+  .screen--sandbox {
+    display: grid;
+    grid-template-columns: 1fr 340px;
+    grid-template-rows: auto 1fr auto;
+    grid-template-areas:
+      "board topline"
+      "board top-player"
+      "board bottom-player"
+      "board bottomline";
+    align-items: center;
+    justify-content: center;
+    max-width: 1200px;
+    margin: 0 auto;
+    padding: 24px;
+    height: 100vh;
+    box-sizing: border-box;
+  }
+  .board-stage {
+    grid-area: board;
+    width: min(85vh, 100%);
+    margin: 0 auto;
+  }
+  .game-topline, .sandbox-top-controls {
+    grid-area: topline;
+    align-self: end;
+  }
+  .player-card--top, .sandbox-palette {
+    grid-area: top-player;
+    align-self: center;
+  }
+  .player-card--bottom, .sandbox-engine-controls {
+    grid-area: bottom-player;
+    align-self: center;
+  }
+  .game-bottomline {
+    grid-area: bottomline;
+    align-self: start;
+  }
+  .game-topline { margin-bottom: 12px; }
+  .game-bottomline { margin-top: 12px; }
+}

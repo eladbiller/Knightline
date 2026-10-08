@@ -2032,9 +2032,12 @@ public final class KnightlineActivity extends ChessLinkActivity {
         int to = payload.optInt("to", -1);
         int promo = payload.optInt("promo", 5);
         if (from >= 0 && to >= 0) {
+            int beforePieces = MoveFeedback.pieces(sandboxGame.b);
             sandboxHistory.add(sandboxGame.copy());
             sandboxRedo.clear();
             sandboxGame.move(sandboxGame.turn, from, to, promo);
+            int afterPieces = MoveFeedback.pieces(sandboxGame.b);
+            feedback.play(webView, MoveFeedback.cue(beforePieces, afterPieces, sandboxGame.winner));
             evaluateSandbox();
             publishState();
         }
@@ -2068,6 +2071,7 @@ public final class KnightlineActivity extends ChessLinkActivity {
             sandboxRedo.clear();
             sandboxGame.b[square] = piece;
             sandboxCoach = null;
+            feedback.play(webView, "move");
             if (sandboxEvalEnabled) evaluateSandbox();
             publishState();
         }
